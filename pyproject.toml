@@ -1,0 +1,26 @@
+[project]
+name = "comfyui-anex"
+version = "0.1.0"
+description = "Video with sound from MiniMax H3 and FastH3 on anex.sh, from inside ComfyUI: text to video, first and last frame, reference images, video editing and 2K upscaling."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "anex.sh", email = "support@anex.sh"}]
+keywords = ["comfyui", "anex", "minimax h3", "video generation", "text to video"]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+]
+# ComfyUI already ships both.
+dependencies = ["aiohttp", "pillow"]
+
+[project.urls]
+Homepage = "https://anex.sh"
+Documentation = "https://anex.sh/docs/video"
+Support = "https://anex.sh/support"
+
+[tool.comfy]
+PublisherId = "anex"
+DisplayName = "anex.sh video"
+Icon = "https://anex.sh/static/icon-192.png"
+includes = []
