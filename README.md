@@ -43,7 +43,16 @@ export ANEX_API_KEY=<your key>
 python main.py
 ```
 
-Each node also has an `api_key` field under its advanced inputs. A key typed
+The `api_key` field under each node's advanced inputs stays empty: its label
+reads "api_key (empty: ANEX_API_KEY is set)" when ComfyUI was started with
+the key, and the status line under the node names where a run took its key
+from. If the label reads "api_key (ANEX_API_KEY not set)", ComfyUI did not
+get the variable. ComfyUI Desktop, started from the Dock or the Start menu,
+does not see a variable exported in a terminal: on macOS run
+`launchctl setenv ANEX_API_KEY <your key>`, on Windows
+`setx ANEX_API_KEY <your key>`, then quit and reopen ComfyUI Desktop.
+
+You can also paste the key into a node's `api_key` field. A key typed
 there is saved inside the workflow and in the metadata of the files ComfyUI
 writes, so anyone you share either with can use it. The environment variable
 keeps it out of both.

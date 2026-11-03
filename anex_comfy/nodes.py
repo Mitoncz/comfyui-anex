@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 
 import numpy as np
 import torch
@@ -14,7 +15,7 @@ from comfy_api.latest import IO, ComfyExtension, Input, InputImpl, Types
 
 from . import pricing
 from .client import (REGIONS, DEFAULT_REGION, KEY_ENV, AnexClient, AnexError,
-                     Interrupted, TaskEnded, resolve_key)
+                     Interrupted, TaskEnded, key_source, resolve_key)
 
 log = logging.getLogger("comfyui-anex")
 
@@ -121,7 +122,7 @@ async def _generate(cls, region: str, api_key: str, body: dict, price: str,
     client = _client(cls, region, api_key, price)
     try:
         async with client:
-            client.status("Starting")
+            client.status(f"Starting (key from {key_source(api_key)})")
             for label, data, content_type, build in uploads:
                 client.status(f"Uploading {label}")
                 body.setdefault("content", []).append(
@@ -182,6 +183,18 @@ def _seed_input() -> IO.Int.Input:
                         "instead of reusing the last one.")
 
 
+def _key_hint() -> tuple[str, str]:
+    """The api_key field's label and placeholder: whether ComfyUI was started
+    with ANEX_API_KEY (read once, when the nodes load; the environment of a
+    running ComfyUI does not change). The canvas draws the label, never the
+    placeholder, of a one-line field, so the label carries the hint."""
+    if os.environ.get(KEY_ENV, "").strip():
+        return (f"api_key (empty: {KEY_ENV} is set)",
+                f"empty: using {KEY_ENV} from the environment")
+    return (f"api_key ({KEY_ENV} not set)",
+            f"paste your key, or set {KEY_ENV} and restart ComfyUI")
+
+
 def _account_inputs() -> list:
     return [
         IO.Combo.Input("region", options=list(REGIONS), default=DEFAULT_REGION,
@@ -189,6 +202,7 @@ def _account_inputs() -> list:
                        tooltip="eu for organizations that keep their data in "
                        "the EEA: the clip is made and stored in the EU."),
         IO.String.Input("api_key", default="", advanced=True,
+                        display_name=_key_hint()[0], placeholder=_key_hint()[1],
                         tooltip=f"Leave empty to use the {KEY_ENV} "
                         "environment variable (recommended). A key typed here "
                         "is saved inside the workflow and in the metadata of "
@@ -479,7 +493,8 @@ class AnexGetTask(IO.ComfyNode):
         client = _client(cls, region, api_key, "no charge")
         try:
             async with client:
-                client.status(f"Task {task_id}: fetching")
+                client.status(f"Task {task_id}: fetching (key from "
+                              f"{key_source(api_key)})")
                 _task, clip = await client.fetch(task_id)
         except Interrupted:
             raise Exception(f"Interrupted: task {task_id} was left as it "

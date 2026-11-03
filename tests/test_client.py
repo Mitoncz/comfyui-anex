@@ -274,3 +274,11 @@ def test_the_client_remembers_its_task():
         return c.task_id
 
     assert run(fake, go) == "318407566120873452"
+
+
+def test_key_source_names_where_the_key_comes_from(monkeypatch):
+    monkeypatch.setenv(anex.KEY_ENV, "from-env")
+    assert anex.key_source("typed") == "the node's api_key field"
+    assert anex.key_source("") == "ANEX_API_KEY"
+    monkeypatch.delenv(anex.KEY_ENV)
+    assert anex.key_source("  ") is None

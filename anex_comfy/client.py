@@ -92,6 +92,16 @@ def resolve_key(api_key: str | None) -> str:
     return key
 
 
+def key_source(api_key: str | None) -> str | None:
+    """Where resolve_key takes the key from: the node's field, the
+    environment, or nowhere (None)."""
+    if (api_key or "").strip():
+        return "the node's api_key field"
+    if os.environ.get(KEY_ENV, "").strip():
+        return KEY_ENV
+    return None
+
+
 async def _error_from(resp: aiohttp.ClientResponse) -> AnexError:
     """An AnexError from a non-2xx answer: MiniMax's error body on the tasks
     host, `{"detail": ...}` on the API host."""

@@ -219,3 +219,33 @@ def test_a_node_that_stops_waiting_names_the_task_to_fetch():
         run(nodes.AnexTextToVideo, model="MiniMax-H3", prompt="a fox",
             duration=4, ratio="16:9", resolution="768P", seed=0)
     assert "Get Task" not in str(exc.value)
+
+
+def test_the_empty_key_field_says_whether_the_environment_has_the_key(monkeypatch):
+    def field():
+        inputs = nodes.AnexTextToVideo.define_schema().inputs
+        return next(i for i in inputs if i.id == "api_key")
+
+    monkeypatch.setenv("ANEX_API_KEY", "k")
+    assert field().display_name == "api_key (empty: ANEX_API_KEY is set)"
+    assert "using ANEX_API_KEY" in field().placeholder
+    monkeypatch.delenv("ANEX_API_KEY")
+    assert field().display_name == "api_key (ANEX_API_KEY not set)"
+    assert "set ANEX_API_KEY and restart" in field().placeholder
+
+
+def test_the_status_line_names_the_key_source():
+    seen = []
+    original = FakeClient.__init__
+
+    def init(self, key, region, on_status=None, is_interrupted=None):
+        original(self, key, region, on_status=seen.append,
+                 is_interrupted=is_interrupted)
+
+    FakeClient.__init__ = init
+    try:
+        run(nodes.AnexTextToVideo, model="MiniMax-H3", prompt="a fox",
+            duration=4, ratio="16:9", resolution="768P", seed=0)
+    finally:
+        FakeClient.__init__ = original
+    assert any("key from ANEX_API_KEY" in line for line in seen)
