@@ -18,9 +18,19 @@ Upscale Video to 2K to upscale that clip without sending it back.
 
 ## Install
 
-Search for "anex.sh video" in ComfyUI-Manager, or clone this folder into
-`ComfyUI/custom_nodes/` and restart ComfyUI. It needs nothing beyond
-ComfyUI's own packages.
+Search for "anex.sh video" in ComfyUI-Manager, or run
+`comfy node install comfyui-anex`. To install by hand, put this folder in
+`ComfyUI/custom_nodes/` (for example
+`git clone https://github.com/Mitoncz/comfyui-anex ComfyUI/custom_nodes/comfyui-anex`)
+and restart ComfyUI. It needs nothing beyond ComfyUI's own packages.
+
+The nodes are under "anex.sh/video" in the node library. Three ready
+workflows open from the Templates panel under "comfyui-anex", or by dragging
+a file from `example_workflows/` onto the canvas:
+
+- `anex_text_to_video`: a 4 s FastH3 clip, then the same clip upscaled to 2K.
+- `anex_first_last_frame`: a clip that starts on an image you load.
+- `anex_edit_video`: a video you load, edited with an image as a reference.
 
 ## Your API key
 

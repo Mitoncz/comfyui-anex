@@ -1,0 +1,23 @@
+# Publishes the pack to the Comfy Registry (registry.comfy.org) whenever the
+# version in pyproject.toml changes on main. Runs in the pack's own public
+# repository, where this folder is the repository root; REGISTRY_ACCESS_TOKEN
+# is the publisher's API key from the registry.
+name: Publish to Comfy registry
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [pyproject.toml]
+
+permissions:
+  issues: write
+
+jobs:
+  publish-node:
+    name: Publish Custom Node to registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Comfy-Org/publish-node-action@v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
