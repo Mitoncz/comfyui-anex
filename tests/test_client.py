@@ -238,3 +238,39 @@ def test_key_comes_from_the_node_or_the_environment(monkeypatch):
     monkeypatch.delenv(anex.KEY_ENV)
     with pytest.raises(anex.AnexError, match="ANEX_API_KEY"):
         anex.resolve_key(None)
+
+
+def test_fetch_waits_for_an_existing_task_and_downloads_it():
+    fake = Fake(statuses=("running", "succeeded"))
+    task, clip = run(fake, lambda c: c.fetch("318407566120873452"))
+    assert clip == CLIP and task["status"] == "succeeded"
+    assert fake.creates == [] and fake.deletes == []
+
+
+def test_stopping_a_fetch_never_cancels_the_task():
+    fake = Fake(statuses=("queued",))
+    polls = {"n": 0}
+
+    def interrupted():
+        polls["n"] += 1
+        return polls["n"] > 3
+
+    with pytest.raises(anex.Interrupted):
+        run(fake, lambda c: c.fetch("318407566120873452"),
+            is_interrupted=interrupted)
+    assert fake.deletes == []
+    fake = Fake(statuses=("queued",))
+    with pytest.raises(anex.AnexError, match="did not finish"):
+        run(fake, lambda c: c.fetch("318407566120873452"),
+            max_wait_seconds=0.05)
+    assert fake.deletes == []
+
+
+def test_the_client_remembers_its_task():
+    fake = Fake(statuses=("succeeded",))
+
+    async def go(c):
+        await c.run({"content": [1]})
+        return c.task_id
+
+    assert run(fake, go) == "318407566120873452"

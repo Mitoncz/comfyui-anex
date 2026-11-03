@@ -147,6 +147,8 @@ class AnexClient:
         self.max_wait_seconds = max_wait_seconds
         self.max_busy_wait_seconds = max_busy_wait_seconds
         self._session: aiohttp.ClientSession | None = None
+        # The task this client created or fetched last, for messages.
+        self.task_id: str | None = None
 
     async def __aenter__(self) -> "AnexClient":
         self._session = aiohttp.ClientSession(
@@ -254,12 +256,14 @@ class AnexClient:
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return False
 
-    async def wait(self, task_id: str) -> dict:
+    async def wait(self, task_id: str, *, cancel_on_stop: bool = True) -> dict:
         """Poll a task until it ends and return it when it succeeded.
 
         A failed or cancelled task raises TaskEnded with the task's own
         message. On an interrupt, a timeout or lost contact the task is
-        cancelled first (free while it is still queued)."""
+        cancelled first (free while it is still queued), unless
+        `cancel_on_stop` is false: a task this client only fetches is left
+        to finish."""
         started = time.monotonic()
         failures = 0
         try:
@@ -295,6 +299,8 @@ class AnexClient:
         except TaskEnded:
             raise
         except (Interrupted, AnexError):
+            if not cancel_on_stop:
+                raise
             cancelled = await self.cancel(task_id)
             self._status(f"Task {task_id} cancelled at no charge" if cancelled
                          else f"Task {task_id} was already running: it "
@@ -323,11 +329,22 @@ class AnexClient:
         task, the MP4 bytes)."""
         task_id = await (self.create_upscale(body) if upscale
                          else self.create(body))
+        self.task_id = task_id
         self._status(f"Task {task_id}: created")
         task = await self.wait(task_id)
+        return task_id, task, await self._clip(task_id, task)
+
+    async def fetch(self, task_id: str) -> tuple[dict, bytes]:
+        """An existing task's clip: wait for the task to end (never
+        cancelling it) and download the clip. (the task, the MP4 bytes)"""
+        self.task_id = task_id
+        task = await self.wait(task_id, cancel_on_stop=False)
+        return task, await self._clip(task_id, task)
+
+    async def _clip(self, task_id: str, task: dict) -> bytes:
         url = (task.get("content") or {}).get("url")
         if not url:
             raise AnexError(f"task {task_id} succeeded without a clip link")
         self._status(f"Task {task_id}: downloading the clip")
-        return task_id, task, await self.download(url)
+        return await self.download(url)
 

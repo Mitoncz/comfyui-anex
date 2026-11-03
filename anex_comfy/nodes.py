@@ -14,7 +14,7 @@ from comfy_api.latest import IO, ComfyExtension, Input, InputImpl, Types
 
 from . import pricing
 from .client import (REGIONS, DEFAULT_REGION, KEY_ENV, AnexClient, AnexError,
-                     Interrupted, resolve_key)
+                     Interrupted, TaskEnded, resolve_key)
 
 log = logging.getLogger("comfyui-anex")
 
@@ -40,7 +40,7 @@ def _interrupted() -> bool:
 
 def _status_fn(node_id, price: str):
     """Writes the task's progress under the node, after the clip's list
-    price."""
+    price (or "no charge")."""
     logged = {"last": None}
 
     def show(text: str) -> None:
@@ -49,7 +49,7 @@ def _status_fn(node_id, price: str):
         if state != logged["last"]:
             logged["last"] = state
             log.info("%s: %s", price, text)
-        text = f"{price} at list price\n{text}"
+        text = f"{price}{'' if price == 'no charge' else ' at list price'}\n{text}"
         try:
             from server import PromptServer
             if node_id is not None and PromptServer.instance is not None:
@@ -118,8 +118,9 @@ async def _generate(cls, region: str, api_key: str, body: dict, price: str,
     `uploads` are (label, bytes, content type, content item builder): each
     file is uploaded and its `input:<id>` passed to the builder, whose item
     joins `body["content"]`."""
+    client = _client(cls, region, api_key, price)
     try:
-        async with _client(cls, region, api_key, price) as client:
+        async with client:
             client.status("Starting")
             for label, data, content_type, build in uploads:
                 client.status(f"Uploading {label}")
@@ -128,14 +129,25 @@ async def _generate(cls, region: str, api_key: str, body: dict, price: str,
                                               filename=label)))
             task_id, task, clip = await client.run(body, upscale=upscale)
     except Interrupted:
-        raise Exception("Interrupted: the anex.sh task was cancelled if it "
-                        "had not started yet") from None
-    except AnexError as exc:
+        raise Exception(
+            "Interrupted: the anex.sh task was cancelled if it had not "
+            "started yet" + _fetch_hint(client.task_id)) from None
+    except TaskEnded as exc:
         raise Exception(f"anex.sh: {exc}") from None
+    except AnexError as exc:
+        raise Exception(f"anex.sh: {exc}{_fetch_hint(client.task_id)}") from None
     usage = task.get("usage") or {}
     log.info("anex.sh task %s done: %s s of video", task_id,
              usage.get("output_seconds"))
     return IO.NodeOutput(InputImpl.VideoFromFile(io.BytesIO(clip)), task_id)
+
+
+def _fetch_hint(task_id: str | None) -> str:
+    """How to get a clip the node stopped waiting for."""
+    if not task_id:
+        return ""
+    return (f". If it was already running it still finishes: fetch it with "
+            f"the anex.sh Get Task node, task id {task_id}")
 
 
 # --------------------------------------------------------------------------- #
@@ -434,8 +446,51 @@ class AnexUpscaleTo2K(IO.ComfyNode):
                                uploads=uploads, upscale=True)
 
 
+class AnexGetTask(IO.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return IO.Schema(
+            node_id="AnexGetTask",
+            display_name="anex.sh Get Task",
+            category=CATEGORY,
+            description="The clip of a task made earlier: one a node stopped "
+            "waiting for (ComfyUI was closed or restarted, or the run was "
+            "cancelled once the task was rendering), or one made through the "
+            "API. Waits for the task to finish if it has not yet. Costs "
+            "nothing; the clip was billed when it was made. Clips are kept "
+            "30 days.",
+            inputs=[
+                IO.String.Input("task_id", default="",
+                                tooltip="The task id, from the node's status "
+                                "line or error message, or its task_id "
+                                "output."),
+                *_account_inputs(),
+            ],
+            outputs=_OUTPUTS,
+            hidden=_HIDDEN,
+        )
+
+    @classmethod
+    async def execute(cls, task_id: str, region: str = DEFAULT_REGION,
+                      api_key: str = "") -> IO.NodeOutput:
+        task_id = (task_id or "").strip()
+        if not task_id:
+            raise ValueError("enter a task id")
+        client = _client(cls, region, api_key, "no charge")
+        try:
+            async with client:
+                client.status(f"Task {task_id}: fetching")
+                _task, clip = await client.fetch(task_id)
+        except Interrupted:
+            raise Exception(f"Interrupted: task {task_id} was left as it "
+                            "is") from None
+        except AnexError as exc:
+            raise Exception(f"anex.sh: {exc}") from None
+        return IO.NodeOutput(InputImpl.VideoFromFile(io.BytesIO(clip)), task_id)
+
+
 NODES = [AnexTextToVideo, AnexFirstLastFrameToVideo, AnexReferenceToVideo,
-         AnexUpscaleTo2K]
+         AnexUpscaleTo2K, AnexGetTask]
 
 
 class AnexExtension(ComfyExtension):

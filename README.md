@@ -11,6 +11,7 @@ sends a request to anex.sh, waits for the clip and hands it on as a ComfyUI
 | anex.sh First/Last Frame to Video | MiniMax H3 | a clip that starts on one image, ends on another, or both |
 | anex.sh Reference to Video / Edit Video | MiniMax H3 Ref2VA (4-step) | people, products or places from up to 9 images in a new clip, or up to 3 videos edited as the prompt describes |
 | anex.sh Upscale Video to 2K | | a finished 768P clip at 2K |
+| anex.sh Get Task | | the clip of a task made earlier, at no charge |
 
 Clips are 768P (768 pixels on the short side) or 2K, 24 frames per second,
 4 to 15 seconds. Every node also outputs the anex.sh `task_id`: connect it to
@@ -71,6 +72,14 @@ cost nothing. Full details: [anex.sh/docs/video](https://anex.sh/docs/video#pric
 Cancel the run in ComfyUI and the node cancels its anex.sh task. A task that
 is still queued is dropped at no charge. One that has started rendering
 finishes and is billed, because the render cannot be stopped part way.
+
+## Closing ComfyUI mid-run
+
+The clip keeps rendering on anex.sh. If ComfyUI is still running when you
+come back, the node carries on and picks the clip up. If ComfyUI was closed
+or restarted, put the task id (shown under the node and in its error
+message) into an **anex.sh Get Task** node: it waits for the task if it has
+not finished and loads its clip, at no charge. Clips are kept 30 days.
 
 ## Inputs you supply
 

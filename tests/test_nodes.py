@@ -44,14 +44,25 @@ class FakeClient:
         self.uploads.append((filename, content_type, len(data)))
         return f"input:up{len(self.uploads)}"
 
+    task_id = None
+    fail_with = None
+
     async def run(self, body, upscale=False):
         self.body, self.upscale = body, upscale
+        self.task_id = "task-1"
+        if FakeClient.fail_with is not None:
+            raise FakeClient.fail_with
         return "task-1", {"status": "succeeded"}, CLIP
+
+    async def fetch(self, task_id):
+        self.fetched = task_id
+        return {"status": "succeeded"}, CLIP
 
 
 @pytest.fixture(autouse=True)
 def fake_client(monkeypatch):
     FakeClient.calls = []
+    FakeClient.fail_with = None
     monkeypatch.setattr(nodes, "AnexClient", FakeClient)
     monkeypatch.setenv("ANEX_API_KEY", "k")
     for node in nodes.NODES:
@@ -186,3 +197,25 @@ def test_upscale_of_a_video_uploads_it_as_the_base_video():
 def test_upscale_needs_a_source():
     with pytest.raises(ValueError, match="task_id or a video"):
         run(nodes.AnexUpscaleTo2K)
+
+
+def test_get_task_fetches_and_costs_nothing():
+    client, out = run(nodes.AnexGetTask, task_id=" 458154338194580776 ")
+    assert client.fetched == "458154338194580776"
+    assert out.result[1] == "458154338194580776"
+    with pytest.raises(ValueError, match="task id"):
+        run(nodes.AnexGetTask, task_id="  ")
+
+
+def test_a_node_that_stops_waiting_names_the_task_to_fetch():
+    client_mod = importlib.import_module(f"{pack.__name__}.anex_comfy.client")
+    FakeClient.fail_with = client_mod.AnexError("lost contact with task task-1")
+    with pytest.raises(Exception, match="Get Task node, task id task-1"):
+        run(nodes.AnexTextToVideo, model="MiniMax-H3", prompt="a fox",
+            duration=4, ratio="16:9", resolution="768P", seed=0)
+    # A task that failed on our side has no clip to fetch.
+    FakeClient.fail_with = client_mod.TaskEnded("task task-1 failed: refused")
+    with pytest.raises(Exception) as exc:
+        run(nodes.AnexTextToVideo, model="MiniMax-H3", prompt="a fox",
+            duration=4, ratio="16:9", resolution="768P", seed=0)
+    assert "Get Task" not in str(exc.value)
