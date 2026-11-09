@@ -96,18 +96,19 @@ class Fake:
 
 
 def run(fake, coro_fn, **kwargs):
-    """Start the fake, point the client at it and run coro_fn(client)."""
+    """Start the fake, point the client at it and run coro_fn(client). The
+    hosts are fixed in the module, so the test swaps the region table."""
     async def main():
         server = TestServer(fake.app)
         await server.start_server()
         base = str(server.make_url("")).rstrip("/")
-        os.environ[anex.TASKS_URL_ENV] = base
-        os.environ[anex.API_URL_ENV] = base
+        saved = anex.REGIONS[anex.DEFAULT_REGION]
+        anex.REGIONS[anex.DEFAULT_REGION] = (base, base)
         try:
             async with anex.AnexClient(KEY, poll_seconds=0.01, **kwargs) as c:
                 return await coro_fn(c)
         finally:
-            del os.environ[anex.TASKS_URL_ENV], os.environ[anex.API_URL_ENV]
+            anex.REGIONS[anex.DEFAULT_REGION] = saved
             await server.close()
     return asyncio.run(main())
 
@@ -218,15 +219,15 @@ def test_a_bad_key_says_so():
         run(fake, go)
 
 
-def test_regions_and_overrides(monkeypatch):
-    monkeypatch.delenv(anex.TASKS_URL_ENV, raising=False)
-    monkeypatch.delenv(anex.API_URL_ENV, raising=False)
+def test_regions_are_fixed_hosts(monkeypatch):
+    # The variables older versions read change nothing: the key only ever
+    # goes to the region's own anex.sh hosts.
+    monkeypatch.setenv("ANEX_TASKS_URL", "https://example.com")
+    monkeypatch.setenv("ANEX_API_URL", "https://example.com")
     assert anex.endpoints("world") == anex.Endpoints(
         "https://tasks.anex.sh", "https://api.anex.sh")
     assert anex.endpoints("eu") == anex.Endpoints(
         "https://tasks-eu.anex.sh", "https://api-eu.anex.sh")
-    monkeypatch.setenv(anex.TASKS_URL_ENV, "https://tasks-dev.anex.sh/")
-    assert anex.endpoints("world").tasks_url == "https://tasks-dev.anex.sh"
     with pytest.raises(anex.AnexError):
         anex.endpoints("mars")
 
