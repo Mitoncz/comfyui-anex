@@ -108,7 +108,10 @@ reason and is not billed. See the [terms](https://anex.sh/terms).
 | variable | for |
 |---|---|
 | `ANEX_API_KEY` | your API key |
-| `ANEX_TASKS_URL`, `ANEX_API_URL` | other hosts in place of the region's own (testing) |
+
+The nodes send your key only to anex.sh: `tasks.anex.sh` and `api.anex.sh`,
+or `tasks-eu.anex.sh` and `api-eu.anex.sh` with `region` set to `eu`. Nothing
+in the environment can point them at another host.
 
 ## Licence
 
