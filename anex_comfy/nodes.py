@@ -191,7 +191,8 @@ def _key_hint() -> tuple[str, str]:
         return (f"api_key (empty: {KEY_ENV} is set)",
                 f"empty: using {KEY_ENV} from the environment")
     return (f"api_key ({KEY_ENV} not set)",
-            f"paste your key, or set {KEY_ENV} and restart ComfyUI")
+            f"set {KEY_ENV} and restart ComfyUI (a key pasted here is saved "
+            "with the workflow)")
 
 
 def _account_inputs() -> list:
