@@ -1,0 +1,4 @@
+# Left out of the Comfy Registry archive: the pack's own tests and the
+# publish workflow run here and in CI, never inside a user's ComfyUI.
+tests/
+.github/
