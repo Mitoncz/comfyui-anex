@@ -447,7 +447,7 @@ class AnexUpscaleTo2K(IO.ComfyNode):
         uploads = []
         if task_id:
             body["source_task_id"] = task_id
-            price = f"{pricing.label(pricing.UPSCALE_USD_PER_SECOND)} a second"
+            price = f"{pricing.rate_label(pricing.UPSCALE_USD_PER_SECOND)} a second"
         elif video is not None:
             price = pricing.label(pricing.upscale_usd(video.get_duration()))
             uploads.append(("base_video.mp4", _video_mp4(video), "video/mp4",
