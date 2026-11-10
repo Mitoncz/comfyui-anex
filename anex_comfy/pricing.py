@@ -10,7 +10,6 @@ measured units, never above the amount held when the task is created.
 """
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, replace
 
@@ -36,10 +35,10 @@ TWO_K_MODELS = ("MiniMax-H3", "MiniMax-H3-Ref2VA-SMD-4step")
 # The part of the reference videos that bills is capped at this many seconds.
 MAX_REFERENCE_SECONDS = 15
 
-# Where the prices are read. ANEX_PRICES_URL replaces it, for a test
-# deployment. The catalog names models by their anex.sh ids.
+# Where the prices are read: fixed, like the API hosts in client.py, so
+# nothing in the environment can point the pack elsewhere. The catalog
+# names models by their anex.sh ids.
 CATALOG_URL = "https://anex.sh/api/estimate/catalog"
-PRICES_URL_ENV = "ANEX_PRICES_URL"
 CATALOG_IDS = {"MiniMax-H3": "minimax-h3",
                "MiniMax-H3-Ref2VA-SMD-4step": "minimax-h3-ref2va",
                "FastH3-8-Step-V2": "fasth3-8-step-v2"}
@@ -135,7 +134,7 @@ async def refresh(session=None, *, now: float | None = None) -> None:
     now = time.monotonic() if now is None else now
     if now < _next_fetch:
         return
-    url = os.environ.get(PRICES_URL_ENV) or CATALOG_URL
+    url = CATALOG_URL
     _next_fetch = now + RETRY_SECONDS
     try:
         import aiohttp

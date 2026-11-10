@@ -16,18 +16,16 @@ from typing import Callable
 import aiohttp
 
 # The hosts of each region. An organization that keeps its data in the EEA
-# uses the EU hosts; the other region's host answers 421.
+# uses the EU hosts; the other region's host answers 421. They are fixed:
+# nothing in the environment can point the client elsewhere, so the API key
+# is only ever sent to anex.sh.
 REGIONS = {
     "world": ("https://tasks.anex.sh", "https://api.anex.sh"),
     "eu": ("https://tasks-eu.anex.sh", "https://api-eu.anex.sh"),
 }
 DEFAULT_REGION = "world"
 
-# Environment overrides, for a test deployment: ANEX_TASKS_URL and
-# ANEX_API_URL replace both hosts of whichever region is picked.
 KEY_ENV = "ANEX_API_KEY"
-TASKS_URL_ENV = "ANEX_TASKS_URL"
-API_URL_ENV = "ANEX_API_URL"
 
 TERMINAL = ("succeeded", "failed", "cancelled")
 POLL_SECONDS = 5.0
@@ -70,15 +68,12 @@ class Endpoints:
 
 
 def endpoints(region: str = DEFAULT_REGION) -> Endpoints:
-    """The tasks and API hosts for a region, with the environment overrides
-    applied."""
+    """The tasks and API hosts for a region."""
     if region not in REGIONS:
         raise AnexError(f"unknown region {region!r}; use "
                         + " or ".join(REGIONS))
     tasks_url, api_url = REGIONS[region]
-    return Endpoints(
-        (os.environ.get(TASKS_URL_ENV) or tasks_url).rstrip("/"),
-        (os.environ.get(API_URL_ENV) or api_url).rstrip("/"))
+    return Endpoints(tasks_url, api_url)
 
 
 def resolve_key(api_key: str | None) -> str:

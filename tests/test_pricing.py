@@ -153,8 +153,8 @@ def _refresh(server, monkeypatch, *steps):
     as it is (to check the prices, or change what the server answers)."""
     async def go():
         async with TestServer(server.app) as ts:
-            monkeypatch.setenv(pricing.PRICES_URL_ENV,
-                               str(ts.make_url("/api/estimate/catalog")))
+            monkeypatch.setattr(pricing, "CATALOG_URL",
+                                str(ts.make_url("/api/estimate/catalog")))
             for step in steps:
                 if callable(step):
                     step()
@@ -192,6 +192,6 @@ def test_refresh_failure_keeps_the_prices_and_retries_later(monkeypatch):
 
 
 def test_refresh_never_raises_when_the_host_is_down(monkeypatch):
-    monkeypatch.setenv(pricing.PRICES_URL_ENV, "http://127.0.0.1:9/catalog")
+    monkeypatch.setattr(pricing, "CATALOG_URL", "http://127.0.0.1:9/catalog")
     asyncio.run(pricing.refresh(now=1.0))
     assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.68)
