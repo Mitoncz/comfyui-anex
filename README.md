@@ -66,11 +66,11 @@ The node's status line shows the clip's list price before it starts:
 
 | | per second of video | per reference image | per second of reference video |
 |---|---|---|---|
-| MiniMax H3 | $0.08 | first 5 free, then $0.04 | |
-| MiniMax H3 Ref2VA (4-step) | $0.08 | first 5 free, then $0.04 | $0.08 |
-| FastH3-8-Step-V2 | $0.04 | | |
-| 2K | $0.05 on top of the rate above | | $0.05 on top |
-| Upscale Video to 2K | $0.05 | | |
+| MiniMax H3 | $0.068 | first 5 free, then $0.034 | |
+| MiniMax H3 Ref2VA (4-step) | $0.051 | first 5 free, then $0.034 | $0.051 |
+| FastH3-8-Step-V2 | $0.017 | | |
+| 2K (MiniMax H3 and Ref2VA) | $0.11 | | $0.11 |
+| Upscale Video to 2K | $0.0425 | | |
 
 A reference video bills the part the model reads: its length or the clip's,
 whichever is shorter. Failed, refused and cancelled-while-queued requests
