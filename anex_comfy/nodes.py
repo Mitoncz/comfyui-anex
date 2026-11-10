@@ -258,6 +258,7 @@ class AnexTextToVideo(IO.ComfyNode):
                 "content": [{"type": "text", "text": _check_prompt(prompt)}],
                 "resolution": resolution, "duration": duration,
                 "ratio": ratio, "seed": seed}
+        await pricing.refresh()
         price = pricing.label(pricing.clip_usd(model, duration, resolution))
         return await _generate(cls, region, api_key, body, price)
 
@@ -308,6 +309,7 @@ class AnexFirstLastFrameToVideo(IO.ComfyNode):
         body = {"model": "MiniMax-H3",
                 "content": [{"type": "text", "text": _check_prompt(prompt)}],
                 "resolution": resolution, "duration": duration, "seed": seed}
+        await pricing.refresh()
         price = pricing.label(pricing.clip_usd("MiniMax-H3", duration,
                                                resolution, images=len(uploads)))
         return await _generate(cls, region, api_key, body, price,
@@ -407,6 +409,7 @@ class AnexReferenceToVideo(IO.ComfyNode):
                 "ratio": ratio, "seed": seed}
         # Each reference video bills the part the model reads: its length or
         # the clip's, whichever is shorter.
+        await pricing.refresh()
         price = pricing.label(pricing.clip_usd(
             "MiniMax-H3-Ref2VA-SMD-4step", duration, resolution,
             images=len(images),
@@ -445,9 +448,10 @@ class AnexUpscaleTo2K(IO.ComfyNode):
                       api_key: str = "") -> IO.NodeOutput:
         body = {"model": "MiniMax-H3", "resolution": "2K"}
         uploads = []
+        await pricing.refresh()
         if task_id:
             body["source_task_id"] = task_id
-            price = f"{pricing.rate_label(pricing.UPSCALE_USD_PER_SECOND)} a second"
+            price = f"{pricing.rate_label(pricing.upscale_rate())} a second"
         elif video is not None:
             price = pricing.label(pricing.upscale_usd(video.get_duration()))
             uploads.append(("base_video.mp4", _video_mp4(video), "video/mp4",

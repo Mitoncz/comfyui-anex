@@ -62,7 +62,10 @@ Organizations that keep their data in the EEA (European Economic Area) set
 
 ## Prices
 
-The node's status line shows the clip's list price before it starts:
+The node's status line shows the clip's list price before it starts. The
+prices are read from anex.sh when a node runs (and kept for 10 minutes), so
+they stay current without updating the pack; offline, the pack shows the
+prices it was released with, which were:
 
 | | per second of video | per reference image | per second of reference video |
 |---|---|---|---|

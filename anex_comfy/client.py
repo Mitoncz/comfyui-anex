@@ -42,7 +42,7 @@ MAX_BUSY_WAIT_SECONDS = 30 * 60
 # row ends the wait.
 MAX_POLL_FAILURES = 12
 
-USER_AGENT = "comfyui-anex/1.0.0"
+USER_AGENT = "comfyui-anex/1.1.0"
 
 
 class AnexError(Exception):
