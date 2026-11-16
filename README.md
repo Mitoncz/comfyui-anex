@@ -100,9 +100,9 @@ party) and kept for 24 hours.
 
 - Images: 256 to 5,760 pixels a side, width / height from 0.4 to 2.5.
 - Reference audio: up to 3 `AUDIO` inputs, 2 to 15 seconds each, 15 seconds
-  in total. The node sends each one as a WAV file, whatever it was loaded
-  from. Name them in the prompt as reference audio 1, 2 and 3, in the order
-  they are connected.
+  in total. The node sends each one as a WAV file, at most 15 MB, whatever it
+  was loaded from. Name them in the prompt as Audio 1, 2 and 3 (or reference
+  audio 1, 2 and 3), in the order they are connected.
 - Reference videos: 2 to 15 seconds each, 15 seconds in total, 50 MB each.
   A video that is not H.264 MP4 is re-encoded before upload.
 
