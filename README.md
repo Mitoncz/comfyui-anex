@@ -102,14 +102,14 @@ party) and kept for 24 hours.
 - Reference audio: up to 3 `AUDIO` inputs, 2 to 15 seconds each, 15 seconds
   in total. The node sends each one as a WAV file, whatever it was loaded
   from. Name them in the prompt as reference audio 1, 2 and 3, in the order
-  they are connected; the speech and lyrics in them are transcribed to be
-  checked with the prompt.
+  they are connected.
 - Reference videos: 2 to 15 seconds each, 15 seconds in total, 50 MB each.
   A video that is not H.264 MP4 is re-encoded before upload.
 
 Every request is checked against the use rules of the MiniMax H3 licence
-before anything is generated; a refused request fails the node with the
-reason and is not billed. See the [terms](https://anex.sh/terms).
+before anything is generated, reference sound included: the words spoken
+or sung in audio and in video soundtracks are transcribed for the check. A
+refused request fails the node with the reason and is not billed. See the [terms](https://anex.sh/terms).
 
 ## Environment variables
 
