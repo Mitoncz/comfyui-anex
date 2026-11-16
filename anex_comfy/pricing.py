@@ -172,7 +172,8 @@ def clip_usd(model: str, duration: int, resolution: str = "768P", *,
              images: int = 0, reference_video_seconds: float = 0) -> float:
     """The list price of one clip. `reference_video_seconds` is the summed
     length of the reference videos, each counted up to the clip's length;
-    they bill at the clip's own rate per second, 2K included."""
+    they bill at the clip's own rate per second, 2K included. Reference
+    audio is free, so it takes no part."""
     r = _rates[model]
     rate = r.output
     if resolution == "2K":

@@ -9,7 +9,7 @@ sends a request to anex.sh, waits for the clip and hands it on as a ComfyUI
 |---|---|---|
 | anex.sh Text to Video | MiniMax H3 (50 steps) or FastH3-8-Step-V2 (8 steps) | a clip from a prompt |
 | anex.sh First/Last Frame to Video | MiniMax H3 | a clip that starts on one image, ends on another, or both |
-| anex.sh Reference to Video / Edit Video | MiniMax H3 Ref2VA (4-step) | people, products or places from up to 9 images in a new clip, or up to 3 videos edited as the prompt describes |
+| anex.sh Reference to Video / Edit Video | MiniMax H3 Ref2VA (4-step) | people, products or places from up to 9 images in a new clip, voices or sounds from up to 3 audios, or up to 3 videos edited as the prompt describes |
 | anex.sh Upscale Video to 2K | | a finished 768P clip at 2K |
 | anex.sh Get Task | | the clip of a task made earlier, at no charge |
 
@@ -76,8 +76,8 @@ prices it was released with, which were:
 | Upscale Video to 2K | $0.0425 | | |
 
 A reference video bills the part the model reads: its length or the clip's,
-whichever is shorter. Failed, refused and cancelled-while-queued requests
-cost nothing. Full details: [anex.sh/docs/video](https://anex.sh/docs/video#pricing).
+whichever is shorter. Reference audio is free. Failed, refused and
+cancelled-while-queued requests cost nothing. Full details: [anex.sh/docs/video](https://anex.sh/docs/video#pricing).
 
 ## Cancelling
 
@@ -95,16 +95,21 @@ not finished and loads its clip, at no charge. Clips are kept 30 days.
 
 ## Inputs you supply
 
-Images and videos are uploaded to anex.sh storage (never to a third party)
-and kept for 24 hours.
+Images, audio and videos are uploaded to anex.sh storage (never to a third
+party) and kept for 24 hours.
 
 - Images: 256 to 5,760 pixels a side, width / height from 0.4 to 2.5.
+- Reference audio: up to 3 `AUDIO` inputs, 2 to 15 seconds each, 15 seconds
+  in total. The node sends each one as a WAV file, at most 15 MB, whatever it
+  was loaded from. Name them in the prompt as Audio 1, 2 and 3 (or reference
+  audio 1, 2 and 3), in the order they are connected.
 - Reference videos: 2 to 15 seconds each, 15 seconds in total, 50 MB each.
   A video that is not H.264 MP4 is re-encoded before upload.
 
 Every request is checked against the use rules of the MiniMax H3 licence
-before anything is generated; a refused request fails the node with the
-reason and is not billed. See the [terms](https://anex.sh/terms).
+before anything is generated, reference sound included: the words spoken
+or sung in audio and in video soundtracks are transcribed for the check. A
+refused request fails the node with the reason and is not billed. See the [terms](https://anex.sh/terms).
 
 ## Environment variables
 
