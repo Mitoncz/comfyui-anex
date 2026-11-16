@@ -168,7 +168,7 @@ def test_references_keep_their_order_images_then_videos():
 
 
 def test_references_are_checked_before_upload():
-    with pytest.raises(ValueError, match="at least one reference"):
+    with pytest.raises(ValueError, match="at least one reference image, audio"):
         run(nodes.AnexReferenceToVideo, prompt="p", duration=6,
             ratio="adaptive", resolution="768P", seed=0)
     with pytest.raises(ValueError, match="must be 2 to 15 s"):
@@ -249,3 +249,45 @@ def test_the_status_line_names_the_key_source():
     finally:
         FakeClient.__init__ = original
     assert any("key from ANEX_API_KEY" in line for line in seen)
+
+
+def an_audio(seconds, rate=16000):
+    return {"waveform": torch.zeros(1, 1, int(seconds * rate)),
+            "sample_rate": rate}
+
+
+def test_reference_audio_sent_as_wav_between_images_and_videos():
+    client, _ = run(nodes.AnexReferenceToVideo, prompt="p", duration=6,
+                    ratio="adaptive", resolution="768P", seed=0,
+                    reference_images={"image_1": image()},
+                    reference_videos={"video_1": a_video(3)},
+                    reference_audios={"audio_1": an_audio(4),
+                                      "audio_2": an_audio(2)})
+    content = client.body["content"]
+    assert [(c["type"], c.get("role")) for c in content] == [
+        ("text", None), ("image_url", "reference_image"),
+        ("audio_url", "reference_audio"), ("audio_url", "reference_audio"),
+        ("video_url", "reference_video")]
+    assert [u[:2] for u in client.uploads] == [
+        ("image_1.png", "image/png"), ("audio_1.wav", "audio/wav"),
+        ("audio_2.wav", "audio/wav"), ("video_1.mp4", "video/mp4")]
+    assert content[2]["audio_url"]["url"] == "input:up2"
+
+
+def test_audio_alone_is_a_reference_request():
+    client, _ = run(nodes.AnexReferenceToVideo, prompt="p", duration=6,
+                    ratio="adaptive", resolution="768P", seed=0,
+                    reference_audios={"audio_1": an_audio(5)})
+    assert [c["type"] for c in client.body["content"]] == ["text", "audio_url"]
+
+
+def test_reference_audio_checked_before_upload():
+    with pytest.raises(ValueError, match="Audio 1 is 1.0 s"):
+        run(nodes.AnexReferenceToVideo, prompt="p", duration=6,
+            ratio="adaptive", resolution="768P", seed=0,
+            reference_audios={"audio_1": an_audio(1)})
+    with pytest.raises(ValueError, match="total"):
+        run(nodes.AnexReferenceToVideo, prompt="p", duration=6,
+            ratio="adaptive", resolution="768P", seed=0,
+            reference_audios={"audio_1": an_audio(8), "audio_2": an_audio(8)})
+    assert FakeClient.calls == []

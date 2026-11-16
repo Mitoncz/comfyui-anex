@@ -12,6 +12,7 @@ from typing_extensions import override
 
 from comfy_api.latest import IO, ComfyExtension, Input, InputImpl, Types
 
+from . import audio as audio_files
 from . import pricing
 from .client import (REGIONS, DEFAULT_REGION, KEY_ENV, AnexClient, AnexError,
                      Interrupted, TaskEnded, key_source, resolve_key)
@@ -25,6 +26,7 @@ MIN_SECONDS, MAX_SECONDS = 4, 15
 MAX_REFERENCE_IMAGES = 9
 MAX_REFERENCE_VIDEOS = 3
 REFERENCE_VIDEO_SECONDS = (2, 15)
+MAX_REFERENCE_AUDIOS = audio_files.MAX_REFERENCE_AUDIOS
 
 
 # --------------------------------------------------------------------------- #
@@ -137,8 +139,10 @@ async def _generate(cls, region: str, api_key: str, body: dict, price: str,
     except AnexError as exc:
         raise Exception(f"anex.sh: {exc}{_fetch_hint(client.task_id)}") from None
     usage = task.get("usage") or {}
-    log.info("anex.sh task %s done: %s s of video", task_id,
-             usage.get("output_seconds"))
+    log.info("anex.sh task %s done: %s s of video%s", task_id,
+             usage.get("output_seconds"),
+             (f", {usage['input_audio_seconds']} s of reference audio (free)"
+              if usage.get("input_audio_seconds") else ""))
     return IO.NodeOutput(InputImpl.VideoFromFile(io.BytesIO(clip)), task_id)
 
 
@@ -324,7 +328,8 @@ class AnexReferenceToVideo(IO.ComfyNode):
             display_name="anex.sh Reference to Video / Edit Video",
             category=CATEGORY,
             description="MiniMax H3 Ref2VA (4-step): people, products or "
-            "places from up to 9 reference images appear in the clip, or up "
+            "places from up to 9 reference images appear in the clip, voices "
+            "or sounds from up to 3 reference audios are heard in it, or up "
             "to 3 reference videos are edited as the prompt describes (an "
             "object added or replaced, a new background, a new style). The "
             "clip is made again, so framing and audio are not frame-exact.",
@@ -348,8 +353,19 @@ class AnexReferenceToVideo(IO.ComfyNode):
                     tooltip="Up to 3 videos, 2 to 15 s each and 15 s in "
                     "total, sent in connection order: Video 1, Video 2, "
                     "Video 3."),
+                IO.Autogrow.Input(
+                    "reference_audios",
+                    template=IO.Autogrow.TemplateNames(
+                        IO.Audio.Input("reference_audio"),
+                        names=[f"audio_{i}" for i in
+                               range(1, MAX_REFERENCE_AUDIOS + 1)],
+                        min=0),
+                    tooltip="Up to 3 audios (a voice, music, a sound), 2 to "
+                    "15 s each and 15 s in total, sent as WAV in connection "
+                    "order: Audio 1, Audio 2, Audio 3. Free."),
                 _prompt_input("What to make or change, naming the references "
-                              "as Image 1 or Video 1. Up to 7,000 characters."),
+                              "as Image 1, Audio 1 or Video 1. Up to 7,000 "
+                              "characters."),
                 _duration_input(),
                 IO.Combo.Input("ratio", options=["adaptive", *RATIOS],
                                default="adaptive",
@@ -368,13 +384,16 @@ class AnexReferenceToVideo(IO.ComfyNode):
                       resolution: str, seed: int,
                       reference_images: dict | None = None,
                       reference_videos: dict | None = None,
+                      reference_audios: dict | None = None,
                       region: str = DEFAULT_REGION,
                       api_key: str = "") -> IO.NodeOutput:
         images = [image for batch in (reference_images or {}).values()
                   for image in _images(batch)]
         videos = [v for v in (reference_videos or {}).values() if v is not None]
-        if not images and not videos:
-            raise ValueError("connect at least one reference image or video")
+        audios = [a for a in (reference_audios or {}).values() if a is not None]
+        if not images and not videos and not audios:
+            raise ValueError("connect at least one reference image, audio or "
+                             "video")
         if len(images) > MAX_REFERENCE_IMAGES:
             raise ValueError(f"{len(images)} reference images; at most "
                              f"{MAX_REFERENCE_IMAGES}")
@@ -391,6 +410,12 @@ class AnexReferenceToVideo(IO.ComfyNode):
         if total > high:
             raise ValueError(f"the reference videos total {total:.1f} s; at "
                              f"most {REFERENCE_VIDEO_SECONDS[1]} s")
+        audio_files.check(audios)
+        wavs = [audio_files.wav_bytes(a) for a in audios]
+        for n, wav in enumerate(wavs, 1):
+            if len(wav) > audio_files.MAX_AUDIO_BYTES:
+                raise ValueError(f"Audio {n} is {len(wav) / 2**20:.1f} MB as "
+                                 "WAV; at most 15 MB (use a lower sample rate)")
         uploads = []
         for n, image in enumerate(images, 1):
             _check_image(image, f"Image {n}")
@@ -398,6 +423,11 @@ class AnexReferenceToVideo(IO.ComfyNode):
                             lambda src: {"type": "image_url",
                                          "role": "reference_image",
                                          "image_url": {"url": src}}))
+        for n, wav in enumerate(wavs, 1):
+            uploads.append((f"audio_{n}.wav", wav, "audio/wav",
+                            lambda src: {"type": "audio_url",
+                                         "role": "reference_audio",
+                                         "audio_url": {"url": src}}))
         for n, video in enumerate(videos, 1):
             uploads.append((f"video_{n}.mp4", _video_mp4(video), "video/mp4",
                             lambda src: {"type": "video_url",
@@ -408,7 +438,7 @@ class AnexReferenceToVideo(IO.ComfyNode):
                 "resolution": resolution, "duration": duration,
                 "ratio": ratio, "seed": seed}
         # Each reference video bills the part the model reads: its length or
-        # the clip's, whichever is shorter.
+        # the clip's, whichever is shorter. Reference audio is free.
         await pricing.refresh()
         price = pricing.label(pricing.clip_usd(
             "MiniMax-H3-Ref2VA-SMD-4step", duration, resolution,

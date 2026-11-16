@@ -40,7 +40,7 @@ MAX_BUSY_WAIT_SECONDS = 30 * 60
 # row ends the wait.
 MAX_POLL_FAILURES = 12
 
-USER_AGENT = "comfyui-anex/1.1.0"
+USER_AGENT = "comfyui-anex/1.2.0"
 
 
 class AnexError(Exception):
@@ -193,8 +193,8 @@ class AnexClient:
     # ------------------------------------------------------------------ #
     async def upload(self, data: bytes, content_type: str,
                      filename: str = "input") -> str:
-        """Upload one image or video and return the `input:<id>` source a
-        request names it by (valid for 24 hours)."""
+        """Upload one image, audio file or video and return the `input:<id>`
+        source a request names it by (valid for 24 hours)."""
         async with self.session.post(
                 f"{self.ep.api_url}/batch/v1/inputs", headers=self._headers,
                 json={"kind": "media", "content_type": content_type}) as resp:
