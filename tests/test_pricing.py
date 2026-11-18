@@ -1,24 +1,25 @@
-"""The prices shown on the nodes: worked examples, and the rates pinned to
-the rate cards in config/serving-profiles.yaml while the pack lives in the
-anex.sh repository."""
-import asyncio
+"""The prices shown on the nodes: worked examples, and the built-in rates
+pinned to the rate cards in config/serving-profiles.yaml while the pack
+lives in the anex.sh repository."""
 import os
 import sys
+from decimal import Decimal
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from anex_comfy import pricing  # noqa: E402
+from anex_comfy import catalog, pricing  # noqa: E402
 
 PROFILES = os.path.join(os.path.dirname(__file__), "..", "..", "config",
                         "serving-profiles.yaml")
-# MiniMax-compatible name -> catalog model id.
-CATALOG_IDS = {"MiniMax-H3": "minimax-h3",
-               "MiniMax-H3-Ref2VA-SMD-4step": "minimax-h3-ref2va",
-               "FastH3-8-Step-V2": "fasth3-8-step-v2"}
+
+
+@pytest.fixture(autouse=True)
+def _builtin_models(monkeypatch):
+    monkeypatch.setattr(catalog, "_loaded", list(catalog.BUILTIN))
+    monkeypatch.setattr(catalog, "_live", None)
+    monkeypatch.setattr(catalog, "_upscale_usd", None)
 
 
 def test_worked_examples():
@@ -42,12 +43,13 @@ def test_worked_examples():
 def test_label():
     assert pricing.label(0.48) == "$0.48"
     assert pricing.label(1.3) == "$1.30"
+    assert pricing.label(None) == "price not listed"
     assert pricing.rate_label(0.0425) == "$0.0425"
     assert pricing.rate_label(0.068) == "$0.068"
     assert pricing.rate_label(0.05) == "$0.05"
 
 
-def test_rates_match_the_rate_cards():
+def test_builtin_rates_match_the_rate_cards():
     yaml = pytest.importorskip("yaml")
     if not os.path.exists(PROFILES):
         pytest.skip("not inside the anex.sh repository")
@@ -59,139 +61,73 @@ def test_rates_match_the_rate_cards():
             for row in value:
                 if isinstance(row, dict) and "video_output_usd_per_second" in row:
                     cards[row["model"]] = row
-    for name, model_id in CATALOG_IDS.items():
-        card = cards[model_id]
-        assert float(card["video_output_usd_per_second"]) == \
-            pricing.OUTPUT_USD_PER_SECOND[name], name
-        if name in pricing.TWO_K_MODELS:
-            assert float(card["video_upscale_usd_per_second"]) == \
-                pricing.TWO_K_ADD_USD_PER_SECOND[name], name
-            assert float(card["video_input_image_usd"]) == pricing.IMAGE_USD
-    assert float(cards["seedvr2-3b"]["video_output_usd_per_second"]) == \
-        pricing.UPSCALE_USD_PER_SECOND
+
+    def usd(card, key):
+        return None if card.get(key) is None else Decimal(str(card[key]))
+    for model in catalog.BUILTIN:
+        # The first id is the model's own; the others are older names.
+        card = cards[catalog.BUILTIN_IDS[model.name][0]]
+        assert usd(card, "video_output_usd_per_second") == model.output_usd, \
+            model.name
+        assert usd(card, "video_upscale_usd_per_second") == model.upscale_usd, \
+            model.name
+        assert usd(card, "video_input_image_usd") == model.image_usd, model.name
+        assert (card.get("video_free_images") or 0) == model.free_images, \
+            model.name
+        assert ("2K" in model.resolutions) == (model.upscale_usd is not None)
+    assert float(cards[catalog.UPSCALER_ID]["video_output_usd_per_second"]) \
+        == pricing.UPSCALE_USD_PER_SECOND
 
 
-# The prices read from the catalog: a node shows what anex.sh charges now,
-# not what this version of the pack shipped with.
-def _catalog(**overrides):
-    def model(model_id, **fees):
-        return {"id": model_id, "media_fees": fees}
-    rows = {
-        "minimax-h3": model("minimax-h3", video_output_usd_per_second="0.05",
-                            video_upscale_usd_per_second="0.05",
-                            video_input_image_usd="0.03", video_free_images=4),
-        "minimax-h3-ref2va": model(
-            "minimax-h3-ref2va", video_output_usd_per_second="0.04",
-            video_upscale_usd_per_second="0.06", video_input_image_usd="0.03",
-            video_free_images=4),
-        "fasth3-8-step-v2": model("fasth3-8-step-v2",
-                                  video_output_usd_per_second="0.01"),
-        "seedvr2-3b": model("seedvr2-3b", video_output_usd_per_second="0.03"),
-        "gemma4-31b": model("gemma4-31b", image_usd="0.0001"),
-    }
-    rows.update(overrides)
-    return {"models": [r for r in rows.values() if r is not None]}
+def _catalog():
+    """A catalog with prices unlike the built-in ones, two models sharing
+    the name MiniMax-H3 at different prices."""
+    def video(name, kinds, seed=False):
+        return {"name": name, "names": [name], "kinds": kinds,
+                "resolutions": ["768P", "2K"], "supports_seed": seed}
+    return {"models": [
+        {"id": "minimax-h3", "video": video("MiniMax-H3", ["text", "frames"]),
+         "media_fees": {"video_output_usd_per_second": "0.05",
+                        "video_upscale_usd_per_second": "0.05",
+                        "video_input_image_usd": "0.03",
+                        "video_free_images": 4}},
+        {"id": "minimax-h3-ref2va",
+         "video": video("MiniMax-H3", ["reference"], seed=True),
+         "media_fees": {"video_output_usd_per_second": "0.07",
+                        "video_upscale_usd_per_second": "0.04",
+                        "video_input_image_usd": "0.03",
+                        "video_free_images": 4}},
+        {"id": "minimax-h3-ref2va-smd-4step",
+         "video": video("MiniMax-H3-Ref2VA-SMD-4step", ["reference"]),
+         "media_fees": {"video_output_usd_per_second": "0.04",
+                        "video_upscale_usd_per_second": "0.06",
+                        "video_input_image_usd": "0.03",
+                        "video_free_images": 4}},
+        {"id": "seedvr2-3b",
+         "media_fees": {"video_output_usd_per_second": "0.03"}},
+    ]}
 
 
-@pytest.fixture(autouse=True)
-def _builtin_prices():
-    pricing.reset()
-    yield
-    pricing.reset()
-
-
-def test_catalog_prices_replace_the_builtin_ones():
-    assert pricing.apply_catalog(_catalog())
+def test_catalog_prices_replace_the_builtin_ones(tmp_path):
+    catalog.load(fetch=_catalog, cache_path=str(tmp_path / "c.json"))
     assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.50)
     assert pricing.clip_usd("MiniMax-H3", 10, "2K") == pytest.approx(1.00)
     # 6 images, 4 free: 2 billed at $0.03.
-    assert pricing.clip_usd("MiniMax-H3", 10, images=6) == pytest.approx(0.56)
+    assert pricing.clip_usd("MiniMax-H3", 10, kind="frames",
+                            images=6) == pytest.approx(0.56)
+    # The same name on a reference request is the other model.
+    assert pricing.clip_usd("MiniMax-H3", 10,
+                            kind="reference") == pytest.approx(0.70)
     assert pricing.clip_usd("MiniMax-H3-Ref2VA-SMD-4step", 5,
                             reference_video_seconds=5) == pytest.approx(0.40)
-    assert pricing.clip_usd("FastH3-8-Step-V2", 10) == pytest.approx(0.10)
     assert pricing.upscale_usd(10) == pytest.approx(0.30)
     assert pricing.upscale_rate() == 0.03
+    assert pricing.two_k_models() == ("MiniMax-H3",
+                                      "MiniMax-H3-Ref2VA-SMD-4step")
 
 
-def test_a_model_missing_from_the_catalog_keeps_its_price():
-    assert pricing.apply_catalog(_catalog(**{"fasth3-8-step-v2": None,
-                                             "seedvr2-3b": None}))
+def test_a_model_the_catalog_lacks(tmp_path):
+    catalog.load(fetch=_catalog, cache_path=str(tmp_path / "c.json"))
+    # A built-in model keeps its built-in price; an unknown one has none.
     assert pricing.clip_usd("FastH3-8-Step-V2", 10) == pytest.approx(0.17)
-    assert pricing.upscale_rate() == pricing.UPSCALE_USD_PER_SECOND
-    assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.50)
-
-
-@pytest.mark.parametrize("doc", [
-    {},
-    {"models": "nope"},
-    {"models": [{"id": "gemma4-31b", "media_fees": {}}]},
-    _catalog(**{"minimax-h3": {"id": "minimax-h3", "media_fees": {
-        "video_output_usd_per_second": "-1"}}}),
-    _catalog(**{"minimax-h3": {"id": "minimax-h3", "media_fees": {
-        "video_output_usd_per_second": "free"}}}),
-])
-def test_a_bad_catalog_changes_nothing(doc):
-    assert not pricing.apply_catalog(doc)
-    assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.68)
-    assert pricing.upscale_rate() == pricing.UPSCALE_USD_PER_SECOND
-
-
-class _CatalogServer:
-    def __init__(self, status=200, body=None):
-        self.status, self.body, self.hits = status, body, 0
-        self.app = web.Application()
-        self.app.router.add_get("/api/estimate/catalog", self.catalog)
-
-    async def catalog(self, request):
-        self.hits += 1
-        return web.json_response(self.body, status=self.status)
-
-
-def _refresh(server, monkeypatch, *steps):
-    """Run the steps against the fake catalog server, in one event loop: a
-    number is a pricing.refresh at that monotonic time, a callable is run
-    as it is (to check the prices, or change what the server answers)."""
-    async def go():
-        async with TestServer(server.app) as ts:
-            monkeypatch.setattr(pricing, "CATALOG_URL",
-                                str(ts.make_url("/api/estimate/catalog")))
-            for step in steps:
-                if callable(step):
-                    step()
-                else:
-                    await pricing.refresh(now=step)
-    asyncio.run(go())
-
-
-def test_refresh_reads_the_catalog_and_keeps_it_for_a_while(monkeypatch):
-    server = _CatalogServer(body=_catalog())
-
-    def read_once():
-        assert server.hits == 1
-        assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.50)
-        assert pricing.source.endswith("/api/estimate/catalog")
-    _refresh(server, monkeypatch, 1000.0,
-             1000.0 + pricing.REFRESH_SECONDS - 1, read_once,
-             1000.0 + pricing.REFRESH_SECONDS)
-    assert server.hits == 2
-
-
-def test_refresh_failure_keeps_the_prices_and_retries_later(monkeypatch):
-    server = _CatalogServer(status=503, body={})
-
-    def failed_once():
-        assert server.hits == 1
-        assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.68)
-        assert pricing.source == "built-in"
-        server.status, server.body = 200, _catalog()
-    _refresh(server, monkeypatch, 1000.0,
-             1000.0 + pricing.RETRY_SECONDS - 1, failed_once,
-             1000.0 + pricing.RETRY_SECONDS)
-    assert server.hits == 2
-    assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.50)
-
-
-def test_refresh_never_raises_when_the_host_is_down(monkeypatch):
-    monkeypatch.setattr(pricing, "CATALOG_URL", "http://127.0.0.1:9/catalog")
-    asyncio.run(pricing.refresh(now=1.0))
-    assert pricing.clip_usd("MiniMax-H3", 10) == pytest.approx(0.68)
+    assert pricing.clip_usd("Not-A-Model", 10, kind="text") is None

@@ -1,5 +1,6 @@
-"""ComfyUI nodes for anex.sh video generation (MiniMax H3, FastH3 and 2K
-upscaling), on the MiniMax-compatible API with the user's anex.sh key."""
+"""ComfyUI nodes for anex.sh video generation (MiniMax H3, FastH3, the other
+video models anex.sh lists, and 2K upscaling), on the MiniMax-compatible API
+with the user's anex.sh key."""
 from __future__ import annotations
 
 import io
@@ -13,7 +14,7 @@ from typing_extensions import override
 from comfy_api.latest import IO, ComfyExtension, Input, InputImpl, Types
 
 from . import audio as audio_files
-from . import pricing
+from . import catalog, pricing
 from .client import (REGIONS, DEFAULT_REGION, KEY_ENV, AnexClient, AnexError,
                      Interrupted, TaskEnded, key_source, resolve_key)
 
@@ -51,7 +52,8 @@ def _status_fn(node_id, price: str):
         if state != logged["last"]:
             logged["last"] = state
             log.info("%s: %s", price, text)
-        text = f"{price}{'' if price == 'no charge' else ' at list price'}\n{text}"
+        listed = price.startswith("$")
+        text = f"{price}{' at list price' if listed else ''}\n{text}"
         try:
             from server import PromptServer
             if node_id is not None and PromptServer.instance is not None:
@@ -178,6 +180,29 @@ def _resolution_input() -> IO.Combo.Input:
                           "768p clip upscaled, at an extra rate per second.")
 
 
+def _model_input(kind: str, tooltip: str, *,
+                 optional: bool = False) -> IO.Combo.Input:
+    """The model menu of a node: every model anex.sh lists for this kind of
+    request, read once, when the nodes load."""
+    return IO.Combo.Input("model", options=catalog.names(kind),
+                          default=catalog.default(kind), optional=optional,
+                          tooltip=tooltip)
+
+
+def _model_settings(model: str, kind: str, resolution: str,
+                    body: dict, seed: int) -> None:
+    """Refuse a resolution the model does not offer, before anything is
+    sent, and add the seed when the model honours one, as the last catalog
+    read says. A model that read does not list (one taken off since the menu
+    was built, or a menu with none of its kind) goes as it is, with the
+    seed, and anex.sh answers."""
+    found = catalog.find(model, kind)
+    if found is not None and resolution not in found.resolutions:
+        raise ValueError(f"{model} makes {', '.join(found.resolutions)} only")
+    if found is None or found.supports_seed:
+        body["seed"] = seed
+
+
 def _seed_input() -> IO.Int.Input:
     return IO.Int.Input("seed", default=0, min=0, max=2**31 - 1, step=1,
                         display_mode=IO.NumberDisplay.number,
@@ -233,13 +258,13 @@ class AnexTextToVideo(IO.ComfyNode):
             node_id="AnexTextToVideo",
             display_name="anex.sh Text to Video",
             category=CATEGORY,
-            description="A clip with sound from a text prompt, made by "
-            "MiniMax H3 (50 steps) or FastH3-8-Step-V2 (8 steps, faster and "
-            "cheaper, 768P only) on anex.sh.",
+            description="A clip with sound from a text prompt, made on "
+            "anex.sh by MiniMax H3 (50 steps), FastH3-8-Step-V2 (8 steps, "
+            "faster and cheaper, 768P only) or another model from the menu.",
             inputs=[
-                IO.Combo.Input("model", options=["MiniMax-H3",
-                                                 "FastH3-8-Step-V2"],
-                               default="MiniMax-H3"),
+                _model_input("text", "Every model anex.sh offers for text to "
+                             "video. The list updates when ComfyUI "
+                             "restarts."),
                 _prompt_input(),
                 _duration_input(),
                 IO.Combo.Input("ratio", options=RATIOS, default="16:9",
@@ -256,14 +281,14 @@ class AnexTextToVideo(IO.ComfyNode):
     async def execute(cls, model: str, prompt: str, duration: int, ratio: str,
                       resolution: str, seed: int, region: str = DEFAULT_REGION,
                       api_key: str = "") -> IO.NodeOutput:
-        if resolution == "2K" and model not in pricing.TWO_K_MODELS:
-            raise ValueError(f"{model} makes 768P only")
         body = {"model": model,
                 "content": [{"type": "text", "text": _check_prompt(prompt)}],
                 "resolution": resolution, "duration": duration,
-                "ratio": ratio, "seed": seed}
-        await pricing.refresh()
-        price = pricing.label(pricing.clip_usd(model, duration, resolution))
+                "ratio": ratio}
+        await catalog.refresh()
+        _model_settings(model, "text", resolution, body, seed)
+        price = pricing.label(pricing.clip_usd(model, duration, resolution,
+                                               kind="text"))
         return await _generate(cls, region, api_key, body, price)
 
 
@@ -274,8 +299,9 @@ class AnexFirstLastFrameToVideo(IO.ComfyNode):
             node_id="AnexFirstLastFrameToVideo",
             display_name="anex.sh First/Last Frame to Video",
             category=CATEGORY,
-            description="A MiniMax H3 clip that starts on one image, ends on "
-            "another, or both. The frame sets the aspect ratio.",
+            description="A clip that starts on one image, ends on another, "
+            "or both, made on anex.sh by MiniMax H3 or another model from the "
+            "menu. The frame sets the aspect ratio.",
             inputs=[
                 IO.Image.Input("first_frame", optional=True,
                                tooltip="The clip starts on this image."),
@@ -286,6 +312,12 @@ class AnexFirstLastFrameToVideo(IO.ComfyNode):
                 _resolution_input(),
                 _seed_input(),
                 *_account_inputs(),
+                # Last, and optional: a workflow saved before the node had a
+                # menu restores its other values in place and starts here on
+                # the default model.
+                _model_input("frames", "Every model anex.sh offers for first "
+                             "and last frames. The list updates when ComfyUI "
+                             "restarts.", optional=True),
             ],
             outputs=_OUTPUTS,
             hidden=_HIDDEN,
@@ -296,7 +328,9 @@ class AnexFirstLastFrameToVideo(IO.ComfyNode):
                       seed: int, first_frame: torch.Tensor | None = None,
                       last_frame: torch.Tensor | None = None,
                       region: str = DEFAULT_REGION,
-                      api_key: str = "") -> IO.NodeOutput:
+                      api_key: str = "",
+                      model: str | None = None) -> IO.NodeOutput:
+        model = model or catalog.default("frames")
         if first_frame is None and last_frame is None:
             raise ValueError("connect a first frame, a last frame, or both")
         uploads = []
@@ -310,12 +344,14 @@ class AnexFirstLastFrameToVideo(IO.ComfyNode):
                             lambda src, role=role: {
                                 "type": "image_url", "role": role,
                                 "image_url": {"url": src}}))
-        body = {"model": "MiniMax-H3",
+        body = {"model": model,
                 "content": [{"type": "text", "text": _check_prompt(prompt)}],
-                "resolution": resolution, "duration": duration, "seed": seed}
-        await pricing.refresh()
-        price = pricing.label(pricing.clip_usd("MiniMax-H3", duration,
-                                               resolution, images=len(uploads)))
+                "resolution": resolution, "duration": duration}
+        await catalog.refresh()
+        _model_settings(model, "frames", resolution, body, seed)
+        price = pricing.label(pricing.clip_usd(model, duration, resolution,
+                                               kind="frames",
+                                               images=len(uploads)))
         return await _generate(cls, region, api_key, body, price,
                                uploads=uploads)
 
@@ -327,7 +363,7 @@ class AnexReferenceToVideo(IO.ComfyNode):
             node_id="AnexReferenceToVideo",
             display_name="anex.sh Reference to Video / Edit Video",
             category=CATEGORY,
-            description="MiniMax H3 Ref2VA (4-step): people, products or "
+            description="MiniMax H3 Ref2VA: people, products or "
             "places from up to 9 reference images appear in the clip, voices "
             "or sounds from up to 3 reference audios are heard in it, or up "
             "to 3 reference videos are edited as the prompt describes (an "
@@ -374,6 +410,16 @@ class AnexReferenceToVideo(IO.ComfyNode):
                 _resolution_input(),
                 _seed_input(),
                 *_account_inputs(),
+                # Last, and optional: a workflow saved before the node had a
+                # menu restores its other values in place and starts here on
+                # the default model.
+                _model_input("reference", "Every reference model anex.sh "
+                             "offers. MiniMax-H3-Ref2VA-SMD-4step, the fast "
+                             "4-step model, is the default. MiniMax H3's "
+                             "full 50-step render, listed as MiniMax-H3 when "
+                             "offered, takes about ten times as long. The "
+                             "list updates when ComfyUI restarts.",
+                             optional=True),
             ],
             outputs=_OUTPUTS,
             hidden=_HIDDEN,
@@ -386,7 +432,9 @@ class AnexReferenceToVideo(IO.ComfyNode):
                       reference_videos: dict | None = None,
                       reference_audios: dict | None = None,
                       region: str = DEFAULT_REGION,
-                      api_key: str = "") -> IO.NodeOutput:
+                      api_key: str = "",
+                      model: str | None = None) -> IO.NodeOutput:
+        model = model or catalog.default("reference")
         images = [image for batch in (reference_images or {}).values()
                   for image in _images(batch)]
         videos = [v for v in (reference_videos or {}).values() if v is not None]
@@ -433,15 +481,16 @@ class AnexReferenceToVideo(IO.ComfyNode):
                             lambda src: {"type": "video_url",
                                          "role": "reference_video",
                                          "video_url": {"url": src}}))
-        body = {"model": "MiniMax-H3-Ref2VA-SMD-4step",
+        body = {"model": model,
                 "content": [{"type": "text", "text": _check_prompt(prompt)}],
                 "resolution": resolution, "duration": duration,
-                "ratio": ratio, "seed": seed}
+                "ratio": ratio}
+        await catalog.refresh()
+        _model_settings(model, "reference", resolution, body, seed)
         # Each reference video bills the part the model reads: its length or
         # the clip's, whichever is shorter. Reference audio is free.
-        await pricing.refresh()
         price = pricing.label(pricing.clip_usd(
-            "MiniMax-H3-Ref2VA-SMD-4step", duration, resolution,
+            model, duration, resolution, kind="reference",
             images=len(images),
             reference_video_seconds=sum(min(s, duration) for s in lengths)))
         return await _generate(cls, region, api_key, body, price,
@@ -478,7 +527,7 @@ class AnexUpscaleTo2K(IO.ComfyNode):
                       api_key: str = "") -> IO.NodeOutput:
         body = {"model": "MiniMax-H3", "resolution": "2K"}
         uploads = []
-        await pricing.refresh()
+        await catalog.refresh()
         if task_id:
             body["source_task_id"] = task_id
             price = f"{pricing.rate_label(pricing.upscale_rate())} a second"

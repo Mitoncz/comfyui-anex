@@ -7,15 +7,30 @@ sends a request to anex.sh, waits for the clip and hands it on as a ComfyUI
 
 | node | model | does |
 |---|---|---|
-| anex.sh Text to Video | MiniMax H3 (50 steps) or FastH3-8-Step-V2 (8 steps) | a clip from a prompt |
+| anex.sh Text to Video | MiniMax H3 (50 steps), FastH3-8-Step-V2 (8 steps) | a clip from a prompt |
 | anex.sh First/Last Frame to Video | MiniMax H3 | a clip that starts on one image, ends on another, or both |
-| anex.sh Reference to Video / Edit Video | MiniMax H3 Ref2VA (4-step) | people, products or places from up to 9 images in a new clip, voices or sounds from up to 3 audios, or up to 3 videos edited as the prompt describes |
+| anex.sh Reference to Video / Edit Video | MiniMax H3 Ref2VA (the fast 4-step model, and the full 50-step render where offered) | people, products or places from up to 9 images in a new clip, voices or sounds from up to 3 audios, or up to 3 videos edited as the prompt describes |
 | anex.sh Upscale Video to 2K | | a finished 768P clip at 2K |
 | anex.sh Get Task | | the clip of a task made earlier, at no charge |
 
 Clips are 768P (768 pixels on the short side) or 2K, 24 frames per second,
 4 to 15 seconds. Every node also outputs the anex.sh `task_id`: connect it to
 Upscale Video to 2K to upscale that clip without sending it back.
+
+## Models
+
+The `model` menu of the Text to Video, First/Last Frame and Reference nodes
+lists every model anex.sh offers for that node. The list is read from
+anex.sh when ComfyUI starts, so a model added on anex.sh shows up after a
+restart of ComfyUI, without updating the pack. Offline, the menus show the
+last list read, or the models the pack was released with.
+
+The Reference node's menu lists the reference models anex.sh offers. It
+starts on `MiniMax-H3-Ref2VA-SMD-4step`, the fast 4-step model. MiniMax H3's
+full 50-step render appears in it as `MiniMax-H3` when anex.sh offers it,
+and takes about ten times as long. Workflows saved before the menu existed open
+on the model they always used. A model that makes 768P only refuses 2K
+before anything is sent.
 
 ## Install
 
@@ -64,8 +79,9 @@ Organizations that keep their data in the EEA (European Economic Area) set
 
 The node's status line shows the clip's list price before it starts. The
 prices are read from anex.sh when a node runs (and kept for 10 minutes), so
-they stay current without updating the pack; offline, the pack shows the
-prices it was released with, which were:
+they stay current without updating the pack or restarting ComfyUI; offline,
+the pack shows the last prices read, or those it was released with, which
+were:
 
 | | per second of video | per reference image | per second of reference video |
 |---|---|---|---|
