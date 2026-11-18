@@ -6,6 +6,7 @@ ComfyUI is not importable; run them with ComfyUI on the path:
 import asyncio
 import importlib
 import io
+import json
 import os
 import sys
 
@@ -18,6 +19,7 @@ PACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(PACK))
 pack = importlib.import_module(os.path.basename(PACK))  # as ComfyUI loads it
 nodes = importlib.import_module(f"{pack.__name__}.anex_comfy.nodes")
+catalog = importlib.import_module(f"{pack.__name__}.anex_comfy.catalog")
 
 from comfy_api.latest import IO, InputImpl  # noqa: E402
 
@@ -65,6 +67,10 @@ def fake_client(monkeypatch):
     FakeClient.fail_with = None
     monkeypatch.setattr(nodes, "AnexClient", FakeClient)
     monkeypatch.setenv("ANEX_API_KEY", "k")
+    # The built-in list, as for a pack that cannot reach anex.sh; never the
+    # network.
+    monkeypatch.setattr(catalog, "_loaded", list(catalog.BUILTIN))
+    monkeypatch.setattr(catalog, "_upscale_usd", None)
     for node in nodes.NODES:
         node.GET_SCHEMA()
     yield
@@ -119,7 +125,7 @@ def test_text_to_video_body():
 
 
 def test_fasth3_refuses_2k_before_spending_anything():
-    with pytest.raises(ValueError, match="768P only"):
+    with pytest.raises(ValueError, match="FastH3-8-Step-V2 makes 768P only"):
         run(nodes.AnexTextToVideo, model="FastH3-8-Step-V2", prompt="a fox",
             duration=4, ratio="16:9", resolution="2K", seed=0)
     assert FakeClient.calls == []
@@ -291,3 +297,210 @@ def test_reference_audio_checked_before_upload():
             ratio="adaptive", resolution="768P", seed=0,
             reference_audios={"audio_1": an_audio(8), "audio_2": an_audio(8)})
     assert FakeClient.calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Model menus read from the anex.sh catalog
+# --------------------------------------------------------------------------- #
+GENERATORS = {"text": nodes.AnexTextToVideo,
+              "frames": nodes.AnexFirstLastFrameToVideo,
+              "reference": nodes.AnexReferenceToVideo}
+
+
+def _video(name, kinds, resolutions=("768P", "2K"), seed=False):
+    return {"name": name, "names": [name], "kinds": list(kinds),
+            "resolutions": list(resolutions), "supports_seed": seed}
+
+
+def release_catalog():
+    """The catalog of this release, plus a new text model; MiniMax-H3 is two
+    models, told apart by the kind of request."""
+    def fees(output, upscale=None, images=False):
+        return {"video_output_usd_per_second": output,
+                "video_upscale_usd_per_second": upscale,
+                "video_input_image_usd": "0.034" if images else None,
+                "video_free_images": 5 if images else 0}
+    return {"models": [
+        {"id": "minimax-h3", "video": _video("MiniMax-H3", ["text", "frames"]),
+         "media_fees": fees("0.068", "0.042", images=True)},
+        {"id": "minimax-h3-ref2va",
+         "video": _video("MiniMax-H3", ["reference"], seed=True),
+         "media_fees": fees("0.068", "0.042", images=True)},
+        {"id": "minimax-h3-ref2va-smd-4step",
+         "video": _video("MiniMax-H3-Ref2VA-SMD-4step", ["reference"]),
+         "media_fees": fees("0.051", "0.059", images=True)},
+        {"id": "fasth3-8-step-v2",
+         "video": _video("FastH3-8-Step-V2", ["text"], ["768P"]),
+         "media_fees": fees("0.017")},
+        {"id": "some-new-model",
+         "video": _video("Some-New-Model", ["text"], ["768P"], seed=True),
+         "media_fees": fees("0.02")},
+    ]}
+
+
+@pytest.fixture
+def release(tmp_path):
+    catalog.load(fetch=release_catalog, cache_path=str(tmp_path / "c.json"))
+
+
+def model_input(node):
+    return next(i for i in node.define_schema().inputs if i.id == "model")
+
+
+def run_seen(node, **kwargs):
+    """Run the node; returns the client and the list price it showed."""
+    prices = []
+    original = nodes._status_fn
+
+    def status_fn(node_id, price):
+        prices.append(price)
+        return original(node_id, price)
+    nodes._status_fn = status_fn
+    try:
+        client, _ = run(node, **kwargs)
+    finally:
+        nodes._status_fn = original
+    return client, prices[-1]
+
+
+REQUESTS = {
+    "text": dict(prompt="a fox", duration=4, ratio="16:9", seed=7),
+    "frames": dict(prompt="p", duration=4, seed=7, first_frame=image()),
+    "reference": dict(prompt="p", duration=4, ratio="adaptive", seed=7,
+                      reference_images={"image_1": image()}),
+}
+
+
+def test_each_generator_offers_the_catalogs_models(release):
+    for kind, node in GENERATORS.items():
+        menu = model_input(node)
+        assert menu.options == [m.name for m in catalog.models(kind)], kind
+        assert menu.default == catalog.default(kind), kind
+    assert model_input(nodes.AnexTextToVideo).options == [
+        "MiniMax-H3", "FastH3-8-Step-V2", "Some-New-Model"]
+    assert model_input(nodes.AnexReferenceToVideo).options == [
+        "MiniMax-H3", "MiniMax-H3-Ref2VA-SMD-4step"]
+    assert model_input(nodes.AnexReferenceToVideo).default == \
+        "MiniMax-H3-Ref2VA-SMD-4step"
+    for node in GENERATORS.values():
+        node.define_schema().validate()
+
+
+@pytest.mark.parametrize("kind,model,price,seed", [
+    ("text", "MiniMax-H3", "$0.27", False),
+    ("text", "Some-New-Model", "$0.08", True),
+    ("frames", "MiniMax-H3", "$0.27", False),
+    ("reference", "MiniMax-H3", "$0.27", True),
+    ("reference", "MiniMax-H3-Ref2VA-SMD-4step", "$0.20", False),
+])
+def test_the_request_and_price_follow_the_model(release, kind, model, price,
+                                                seed):
+    client, seen = run_seen(GENERATORS[kind], model=model, resolution="768P",
+                            **REQUESTS[kind])
+    assert client.body["model"] == model
+    assert ("seed" in client.body) is seed
+    if seed:
+        assert client.body["seed"] == 7
+    assert seen == price
+
+
+def test_2k_on_a_model_without_it_is_refused_before_anything_is_sent(release):
+    with pytest.raises(ValueError, match="Some-New-Model makes 768P only"):
+        run(nodes.AnexTextToVideo, model="Some-New-Model", resolution="2K",
+            **REQUESTS["text"])
+    assert FakeClient.calls == []
+    client, _ = run(nodes.AnexReferenceToVideo, model="MiniMax-H3",
+                    resolution="2K", **REQUESTS["reference"])
+    assert client.body["resolution"] == "2K"
+
+
+def test_the_builtin_list_behaves_as_before():
+    """A pack that cannot reach anex.sh: the menus hold the models the nodes
+    always sent, and every request carries its seed, as before."""
+    assert model_input(nodes.AnexTextToVideo).options == [
+        "MiniMax-H3", "FastH3-8-Step-V2"]
+    assert model_input(nodes.AnexFirstLastFrameToVideo).options == [
+        "MiniMax-H3"]
+    assert model_input(nodes.AnexReferenceToVideo).options == [
+        "MiniMax-H3-Ref2VA-SMD-4step"]
+    for kind, node in GENERATORS.items():
+        assert model_input(node).default == catalog.default(kind)
+        client, seen = run_seen(node, model=catalog.default(kind),
+                                resolution="768P", **REQUESTS[kind])
+        assert client.body["seed"] == 7
+        assert seen.startswith("$")
+
+
+def test_a_node_saved_without_a_model_takes_the_default(release):
+    for kind in ("frames", "reference"):
+        client, _ = run(GENERATORS[kind], resolution="768P", **REQUESTS[kind])
+        assert client.body["model"] == catalog.default(kind)
+
+
+def test_a_kind_with_no_model_still_loads_and_lets_anex_sh_answer(monkeypatch):
+    monkeypatch.setattr(catalog, "_loaded", [catalog.BUILTIN[1]])
+    menu = model_input(nodes.AnexReferenceToVideo)
+    assert menu.options == ["MiniMax-H3-Ref2VA-SMD-4step"]
+    nodes.AnexReferenceToVideo.define_schema().validate()
+    client, seen = run_seen(nodes.AnexReferenceToVideo, resolution="2K",
+                            **REQUESTS["reference"])
+    assert client.body["model"] == "MiniMax-H3-Ref2VA-SMD-4step"
+    assert client.body["seed"] == 7
+    assert seen == "$0.44"  # 4 s at 2K, priced at its built-in rates
+
+
+def test_a_model_with_no_known_price_says_so(monkeypatch):
+    monkeypatch.setattr(catalog, "_loaded", [])
+    client, seen = run_seen(nodes.AnexTextToVideo, model="Some-Other-Model",
+                            resolution="2K", **REQUESTS["text"])
+    assert client.body["model"] == "Some-Other-Model"
+    assert seen == "price not listed"
+
+
+def _widget_names(node):
+    """The node's widgets in the order the ComfyUI frontend creates them and
+    restores a saved workflow's positional `widgets_values` onto them: the
+    required inputs, then the optional ones, and after a widget with
+    control_after_generate the value of that control."""
+    widget_types = (IO.String.Input, IO.Int.Input, IO.Float.Input,
+                    IO.Boolean.Input, IO.Combo.Input)
+    by_id = {i.id: i for i in node.define_schema().inputs}
+    names = []
+    for group in ("required", "optional"):
+        for name in node.INPUT_TYPES().get(group, {}):
+            spec = by_id.get(name)
+            if isinstance(spec, widget_types):
+                names.append(name)
+                if getattr(spec, "control_after_generate", None):
+                    names.append(f"{name}:control")
+    return names
+
+
+def test_workflows_saved_before_the_menu_keep_their_values(release):
+    """The example workflows were saved by the pack before the First/Last
+    Frame and Reference nodes had a model menu. Their values must land on
+    the same inputs, and the menu, past the end of the saved values, keeps
+    its default."""
+    folder = os.path.join(PACK, "example_workflows")
+    seen = set()
+    for name in sorted(os.listdir(folder)):
+        with open(os.path.join(folder, name)) as f:
+            workflow = json.load(f)
+        for saved in workflow["nodes"]:
+            node = getattr(nodes, saved["type"], None)
+            if node not in GENERATORS.values():
+                continue
+            seen.add(saved["type"])
+            widgets = _widget_names(node)
+            values = dict(zip(widgets, saved["widgets_values"]))
+            assert values["resolution"] in ("768P", "2K")
+            assert values["seed:control"] == "randomize"
+            assert values["region"] in ("world", "eu")
+            if node is nodes.AnexTextToVideo:
+                assert widgets[0] == "model"
+                assert values["model"] == "FastH3-8-Step-V2"
+            else:
+                assert widgets[-1] == "model"
+                assert len(saved["widgets_values"]) == len(widgets) - 1
+    assert seen == {"AnexTextToVideo", "AnexFirstLastFrameToVideo",
+                    "AnexReferenceToVideo"}
