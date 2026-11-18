@@ -1,13 +1,19 @@
 """The video models anex.sh offers, for the nodes' model menus and prices.
 
-Read once, when ComfyUI defines the nodes, from anex.sh's public catalog
-(the one its price calculator reads), so a model or price added on anex.sh
-reaches the menus after a restart of ComfyUI, with no new release of the
-pack. The read waits at most FETCH_TIMEOUT_SECONDS. When it fails, the last
-good answer kept on disk is used, and without one the list built into the
-pack (BUILTIN): the models and published rates of
-https://anex.sh/docs/video#pricing when this version was released. Nothing
-here raises: a menu or a price must never keep ComfyUI from starting.
+Read from anex.sh's public catalog (the one its price calculator reads)
+when ComfyUI defines the nodes: the menus are built from that read and stay
+as they are for the session, so a model added on anex.sh reaches them after
+a restart of ComfyUI, with no new release of the pack. A read waits at most
+FETCH_TIMEOUT_SECONDS. When it fails, the last good answer kept on disk is
+used, and without one the list built into the pack (BUILTIN): the models
+and published rates of https://anex.sh/docs/video#pricing when this version
+was released. Nothing here raises: a menu or a price must never keep
+ComfyUI from starting or fail a run.
+
+While ComfyUI runs, refresh() reads the catalog again when a node runs (at
+most every REFRESH_SECONDS, RETRY_SECONDS after a failed read), so the
+prices, resolutions and seed support a run uses (find, and the prices in
+pricing.py) follow anex.sh without a restart.
 
 Each video model in the catalog carries a `video` block: the name a request
 sends as `model`, the kinds of request it answers (text, frames,
@@ -17,10 +23,13 @@ models, priced from the catalog by BUILTIN_IDS.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import tempfile
 import threading
+import time
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import Callable
@@ -32,6 +41,13 @@ log = logging.getLogger("comfyui-anex")
 CATALOG_URL = "https://anex.sh/api/estimate/catalog"
 FETCH_TIMEOUT_SECONDS = 3
 MAX_CATALOG_BYTES = 4 * 2**20
+# How long a read catalog is used for prices before a run reads it again,
+# and how soon a failed read is tried again.
+REFRESH_SECONDS = 10 * 60
+RETRY_SECONDS = 60
+# A price above this (per second, or per image) is not a price: the entry
+# carrying it is skipped like any malformed one.
+MAX_USD = Decimal(100)
 
 KINDS = ("text", "frames", "reference")
 RESOLUTIONS = ("768P", "2K")
@@ -74,10 +90,13 @@ BUILTIN_IDS = {
                                     "minimax-h3-ref2va"),
 }
 
-# What load() found: the models, and the upscaler's price per second (None
-# when the catalog did not give it).
+# The models the menus are built from (read once, by load()); the models
+# and upscaler price a run uses (from load(), then refresh()); and when
+# refresh() reads again.
 _loaded: list[VideoModel] | None = None
+_live: list[VideoModel] | None = None
 _upscale_usd: Decimal | None = None
+_next_refresh = 0.0
 
 
 def _usd(value) -> Decimal | None:
@@ -88,7 +107,7 @@ def _usd(value) -> Decimal | None:
         usd = Decimal(str(value))
     except InvalidOperation:
         raise ValueError(f"bad price {value!r}") from None
-    if not usd.is_finite() or usd < 0:
+    if not usd.is_finite() or not 0 <= usd <= MAX_USD:
         raise ValueError(f"bad price {value!r}")
     return usd
 
@@ -210,54 +229,107 @@ def default_cache_path() -> str:
 
 
 def _write_cache(path: str, payload: dict) -> None:
+    """Keep the answer on disk: written to a temporary file of its own in
+    the same directory, then moved into place, so two ComfyUIs sharing a
+    user directory never leave a mixed file."""
+    tmp = None
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        folder = os.path.dirname(path)
+        os.makedirs(folder, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".catalog-",
+                                   suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f)
         os.replace(tmp, path)
     except Exception as exc:  # noqa: BLE001 - the cache is a convenience
         log.warning("anex.sh catalog: could not keep a copy at %s: %s",
                     path, exc)
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _read_good(fetch: Callable[[], dict], path: str
+               ) -> tuple[list[VideoModel], Decimal | None]:
+    """Fetch and parse the catalog, and keep a good answer on disk. Raises
+    on any failure."""
+    payload = _within_timeout(fetch)
+    found = _read(payload)
+    _write_cache(path, payload)
+    return found
 
 
 def load(fetch: Callable[[], dict] | None = None,
          cache_path: str | None = None) -> list[VideoModel]:
-    """Read the catalog and make it the one the nodes use: from anex.sh
-    (by `fetch`, CATALOG_URL by default), else the copy kept on disk, else
-    BUILTIN. Never raises."""
-    global _loaded, _upscale_usd
+    """Read the catalog and make it the one the menus and runs use: from
+    anex.sh (by `fetch`, CATALOG_URL by default), else the copy kept on
+    disk, else BUILTIN. Never raises."""
+    global _loaded, _live, _upscale_usd, _next_refresh
     models, upscale = list(BUILTIN), None
-    fetch = fetch or _fetch
+    fresh = False
     try:
         path = cache_path or default_cache_path()
         try:
-            payload = _within_timeout(fetch)
-            models, upscale = _read(payload)
-            _write_cache(path, payload)
+            models, upscale = _read_good(fetch or _fetch, path)
+            fresh = True
         except Exception as exc:  # noqa: BLE001 - fall back to the copy
-            log.warning("anex.sh catalog not read (%s); using the %s", exc,
-                        "last copy" if os.path.exists(path) else
-                        "built-in list")
             try:
                 with open(path, encoding="utf-8") as f:
                     models, upscale = _read(json.load(f))
+                used = f"the copy kept at {path}"
             except Exception:  # noqa: BLE001 - fall back to BUILTIN
                 models, upscale = list(BUILTIN), None
+                used = "the built-in list"
+            log.warning("anex.sh catalog not read (%s); using %s", exc, used)
     except Exception:  # noqa: BLE001 - never keep ComfyUI from starting
         models, upscale = list(BUILTIN), None
-    _loaded, _upscale_usd = models, upscale
+    _loaded, _live, _upscale_usd = models, list(models), upscale
+    _next_refresh = time.monotonic() + (REFRESH_SECONDS if fresh
+                                        else RETRY_SECONDS)
     return models
 
 
+async def refresh(fetch: Callable[[], dict] | None = None,
+                  cache_path: str | None = None, *,
+                  now: float | None = None) -> None:
+    """Read the catalog again for the run about to start if what a run uses
+    is older than REFRESH_SECONDS (or a failed read is older than
+    RETRY_SECONDS). The menus stay as they are. Never raises: on any failure
+    the run uses the last good data."""
+    global _live, _upscale_usd, _next_refresh
+    now = time.monotonic() if now is None else now
+    if now < _next_refresh:
+        return
+    _next_refresh = now + RETRY_SECONDS
+    try:
+        path = cache_path or default_cache_path()
+        models, upscale = await asyncio.to_thread(_read_good,
+                                                  fetch or _fetch, path)
+    except Exception as exc:  # noqa: BLE001 - a run never fails on prices
+        log.warning("anex.sh catalog not read (%s); keeping the prices in "
+                    "use", exc)
+        return
+    _live = models
+    if upscale is not None:
+        _upscale_usd = upscale
+    _next_refresh = now + REFRESH_SECONDS
+
+
 def loaded() -> list[VideoModel]:
-    """The models in use, read on first use."""
+    """The models the menus are built from, read on first use."""
     return _loaded if _loaded is not None else load()
+
+
+def live() -> list[VideoModel]:
+    """The models a run uses: the last good read."""
+    return _live if _live is not None else loaded()
 
 
 def upscale_usd() -> Decimal | None:
     """The catalog's price per second of the Upscale to 2K node, if read."""
-    loaded()
+    live()
     return _upscale_usd
 
 
@@ -267,8 +339,10 @@ def models(kind: str) -> list[VideoModel]:
 
 
 def find(name: str, kind: str) -> VideoModel | None:
-    """The model a request of this kind reaches under this name."""
-    return next((m for m in models(kind) if m.name == name), None)
+    """The model a request of this kind reaches under this name, as the
+    last good read lists it (None when it lists no such model)."""
+    return next((m for m in live() if kind in m.kinds and m.name == name),
+                None)
 
 
 def names(kind: str) -> list[str]:

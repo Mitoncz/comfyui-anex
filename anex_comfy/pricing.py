@@ -23,7 +23,7 @@ def _model(name: str, kind: str | None) -> catalog.VideoModel | None:
     """The model of this name: for this kind of request when one is given,
     else the first listed under the name. A name the loaded list lacks is
     priced at its built-in rates when it is one of the built-in models."""
-    listed = catalog.loaded()
+    listed = catalog.live()
     for models in (listed, catalog.BUILTIN):
         for model in models:
             if model.name == name and (kind is None or kind in model.kinds):
@@ -33,7 +33,7 @@ def _model(name: str, kind: str | None) -> catalog.VideoModel | None:
 
 def two_k_models() -> tuple[str, ...]:
     """The models that render 2K."""
-    return tuple(dict.fromkeys(m.name for m in catalog.loaded()
+    return tuple(dict.fromkeys(m.name for m in catalog.live()
                                if "2K" in m.resolutions))
 
 

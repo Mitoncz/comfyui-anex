@@ -70,7 +70,13 @@ def fake_client(monkeypatch):
     # The built-in list, as for a pack that cannot reach anex.sh; never the
     # network.
     monkeypatch.setattr(catalog, "_loaded", list(catalog.BUILTIN))
+    monkeypatch.setattr(catalog, "_live", None)
     monkeypatch.setattr(catalog, "_upscale_usd", None)
+    monkeypatch.setattr(catalog, "_next_refresh", float("inf"))
+
+    def offline():
+        raise OSError("the tests never reach anex.sh")
+    monkeypatch.setattr(catalog, "_fetch", offline)
     for node in nodes.NODES:
         node.GET_SCHEMA()
     yield
@@ -339,8 +345,12 @@ def release_catalog():
 
 
 @pytest.fixture
-def release(tmp_path):
-    catalog.load(fetch=release_catalog, cache_path=str(tmp_path / "c.json"))
+def release(tmp_path, monkeypatch):
+    monkeypatch.setattr(catalog, "default_cache_path",
+                        lambda: str(tmp_path / "c.json"))
+    catalog.load(fetch=release_catalog)
+    # No refresh unless a test asks for one.
+    monkeypatch.setattr(catalog, "_next_refresh", float("inf"))
 
 
 def model_input(node):
@@ -504,3 +514,38 @@ def test_workflows_saved_before_the_menu_keep_their_values(release):
                 assert len(saved["widgets_values"]) == len(widgets) - 1
     assert seen == {"AnexTextToVideo", "AnexFirstLastFrameToVideo",
                     "AnexReferenceToVideo"}
+
+
+def test_a_run_refreshes_prices_but_not_the_menus(release, monkeypatch):
+    doc = release_catalog()
+    for m in doc["models"]:
+        if m["id"] == "minimax-h3":
+            m["media_fees"]["video_output_usd_per_second"] = "0.1"
+    doc["models"] = [m for m in doc["models"] if m["id"] != "some-new-model"]
+    doc["models"].append({"id": "seedvr2-3b", "media_fees": {
+        "video_output_usd_per_second": "0.03"}})
+    monkeypatch.setattr(catalog, "_fetch", lambda: doc)
+    monkeypatch.setattr(catalog, "_next_refresh", 0.0)
+    menu = model_input(nodes.AnexTextToVideo).options
+    client, seen = run_seen(nodes.AnexTextToVideo, model="MiniMax-H3",
+                            resolution="768P", **REQUESTS["text"])
+    assert seen == "$0.40"  # 4 s at the refreshed $0.10
+    assert model_input(nodes.AnexTextToVideo).options == menu
+    # A model the refreshed catalog dropped still runs, with no price.
+    client, seen = run_seen(nodes.AnexTextToVideo, model="Some-New-Model",
+                            resolution="768P", **REQUESTS["text"])
+    assert client.body["model"] == "Some-New-Model"
+    assert client.body["seed"] == 7
+    assert seen == "price not listed"
+    # The Upscale node shows the refreshed upscaler price too.
+    _, seen = run_seen(nodes.AnexUpscaleTo2K, task_id="458154338194580776")
+    assert seen == "$0.03 a second"
+
+
+def test_a_failed_refresh_never_fails_a_run(release, monkeypatch):
+    monkeypatch.setattr(catalog, "_next_refresh", 0.0)
+    client, seen = run_seen(nodes.AnexReferenceToVideo, model="MiniMax-H3",
+                            resolution="768P", **REQUESTS["reference"])
+    assert seen == "$0.27"
+    _, seen = run_seen(nodes.AnexUpscaleTo2K, task_id="458154338194580776")
+    assert seen == "$0.0425 a second"

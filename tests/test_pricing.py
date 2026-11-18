@@ -18,6 +18,7 @@ PROFILES = os.path.join(os.path.dirname(__file__), "..", "..", "config",
 @pytest.fixture(autouse=True)
 def _builtin_models(monkeypatch):
     monkeypatch.setattr(catalog, "_loaded", list(catalog.BUILTIN))
+    monkeypatch.setattr(catalog, "_live", None)
     monkeypatch.setattr(catalog, "_upscale_usd", None)
 
 

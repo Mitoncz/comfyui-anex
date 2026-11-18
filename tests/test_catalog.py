@@ -1,6 +1,8 @@
 """The model list the nodes' menus and prices are built from: read from the
 anex.sh catalog, else the last copy kept on disk, else the built-in list."""
+import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -54,7 +56,9 @@ def this_release(text_h3="0.068", reference_h3="0.068"):
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(catalog, "_loaded", None)
+    monkeypatch.setattr(catalog, "_live", None)
     monkeypatch.setattr(catalog, "_upscale_usd", None)
+    monkeypatch.setattr(catalog, "_next_refresh", 0.0)
 
 
 def use(payload, tmp_path):
@@ -168,11 +172,46 @@ def test_load_falls_back_to_the_last_copy_then_the_builtin_list(tmp_path):
     assert catalog.upscale_usd() == Decimal("0.0425")
 
 
-def test_a_corrupt_copy_falls_through_to_the_builtin_list(tmp_path):
+def test_a_corrupt_copy_falls_through_to_the_builtin_list(tmp_path, caplog):
     cache = tmp_path / "catalog.json"
     cache.write_text("{not json")
-    assert catalog.load(fetch=down, cache_path=str(cache)) == catalog.BUILTIN
+    with caplog.at_level(logging.WARNING, logger="comfyui-anex"):
+        assert catalog.load(fetch=down, cache_path=str(cache)) \
+            == catalog.BUILTIN
     assert catalog.upscale_usd() is None
+    assert "using the built-in list" in caplog.text
+    caplog.clear()
+    catalog.load(fetch=this_release, cache_path=str(cache))
+    with caplog.at_level(logging.WARNING, logger="comfyui-anex"):
+        catalog.load(fetch=down, cache_path=str(cache))
+    assert f"using the copy kept at {cache}" in caplog.text
+
+
+@pytest.mark.parametrize("price", ["1e999999999", "100.01", "-0.01", "NaN"])
+def test_an_absurd_price_skips_the_entry(price):
+    doc = this_release()
+    doc["models"].append(entry("odd", block("Odd", ["text"]),
+                               video_output_usd_per_second="0.02",
+                               video_input_image_usd=price))
+    doc["models"].append(entry("odder", block("Odder", ["text"]),
+                               video_output_usd_per_second=price))
+    names = [m.name for m in catalog.parse(doc)]
+    assert "Odd" not in names and "Odder" not in names
+    assert len(names) == 4
+
+
+def test_the_cache_is_written_whole_and_leaves_no_temporary_file(tmp_path):
+    cache = tmp_path / "catalog.json"
+    catalog.load(fetch=this_release, cache_path=str(cache))
+    assert os.listdir(tmp_path) == ["catalog.json"]
+    # A copy that cannot be moved into place (a directory is in the way)
+    # leaves nothing behind.
+    blocked = tmp_path / "blocked"
+    (blocked / "catalog.json").mkdir(parents=True)
+    (blocked / "catalog.json" / "x").write_text("")
+    catalog.load(fetch=this_release,
+                 cache_path=str(blocked / "catalog.json"))
+    assert os.listdir(blocked) == ["catalog.json"]
 
 
 def test_a_bad_answer_is_not_kept(tmp_path):
@@ -231,3 +270,76 @@ def test_a_kind_with_no_model_still_has_a_menu(monkeypatch):
     assert catalog.default("reference") == "MiniMax-H3-Ref2VA-SMD-4step"
     assert catalog.find("MiniMax-H3-Ref2VA-SMD-4step", "reference") is None
     assert catalog.default("text") == "FastH3-8-Step-V2"
+
+
+# --------------------------------------------------------------------------- #
+# Refresh while ComfyUI runs: prices follow anex.sh, menus stay as built
+# --------------------------------------------------------------------------- #
+class Fetcher:
+    def __init__(self, payload):
+        self.payload, self.calls = payload, 0
+
+    def __call__(self):
+        self.calls += 1
+        if isinstance(self.payload, Exception):
+            raise self.payload
+        return self.payload
+
+
+def refresh(fetch, tmp_path, now):
+    asyncio.run(catalog.refresh(fetch, str(tmp_path / "catalog.json"),
+                                now=now))
+
+
+def test_a_price_change_reaches_the_next_run_after_the_interval(tmp_path):
+    use(this_release(), tmp_path)
+    menus = {k: catalog.names(k) for k in catalog.KINDS}
+    fetch = Fetcher(this_release(text_h3="0.09"))
+    catalog._next_refresh = 1000.0
+    refresh(fetch, tmp_path, 999.0)  # inside the interval: no read
+    assert fetch.calls == 0
+    assert catalog.find("MiniMax-H3", "text").output_usd == Decimal("0.068")
+    refresh(fetch, tmp_path, 1000.0)
+    assert fetch.calls == 1
+    assert catalog.find("MiniMax-H3", "text").output_usd == Decimal("0.09")
+    refresh(fetch, tmp_path, 1000.0 + catalog.REFRESH_SECONDS - 1)
+    assert fetch.calls == 1
+    refresh(fetch, tmp_path, 1000.0 + catalog.REFRESH_SECONDS)
+    assert fetch.calls == 2
+    assert {k: catalog.names(k) for k in catalog.KINDS} == menus
+
+
+def test_a_failed_refresh_keeps_the_prices_and_retries_after_a_minute(tmp_path):
+    use(this_release(text_h3="0.07"), tmp_path)
+    catalog._next_refresh = 1000.0
+    fetch = Fetcher(OSError("down"))
+    refresh(fetch, tmp_path, 1000.0)
+    assert fetch.calls == 1
+    assert catalog.find("MiniMax-H3", "text").output_usd == Decimal("0.07")
+    assert catalog.upscale_usd() == Decimal("0.0425")
+    refresh(fetch, tmp_path, 1000.0 + catalog.RETRY_SECONDS - 1)
+    assert fetch.calls == 1
+    fetch.payload = this_release(text_h3="0.09")
+    refresh(fetch, tmp_path, 1000.0 + catalog.RETRY_SECONDS)
+    assert fetch.calls == 2
+    assert catalog.find("MiniMax-H3", "text").output_usd == Decimal("0.09")
+
+
+def test_a_failed_read_at_start_is_retried_by_a_run(tmp_path):
+    catalog.load(fetch=down, cache_path=str(tmp_path / "catalog.json"))
+    assert catalog.names("reference") == ["MiniMax-H3-Ref2VA-SMD-4step"]
+    started = catalog._next_refresh
+    refresh(Fetcher(this_release()), tmp_path, started)
+    # Runs now use the catalog; the menus stay as built.
+    assert catalog.find("MiniMax-H3", "reference") is not None
+    assert catalog.names("reference") == ["MiniMax-H3-Ref2VA-SMD-4step"]
+
+
+def test_a_model_the_refresh_no_longer_lists(tmp_path):
+    use(this_release(), tmp_path)
+    doc = this_release()
+    doc["models"] = [m for m in doc["models"]
+                     if m["id"] != "fasth3-8-step-v2"]
+    refresh(Fetcher(doc), tmp_path, catalog._next_refresh)
+    assert "FastH3-8-Step-V2" in catalog.names("text")
+    assert catalog.find("FastH3-8-Step-V2", "text") is None
