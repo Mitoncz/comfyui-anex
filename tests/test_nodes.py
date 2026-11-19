@@ -72,6 +72,7 @@ def fake_client(monkeypatch):
     monkeypatch.setattr(catalog, "_loaded", list(catalog.BUILTIN))
     monkeypatch.setattr(catalog, "_live", None)
     monkeypatch.setattr(catalog, "_upscale_usd", None)
+    monkeypatch.setattr(catalog, "_upscale_4k_usd", None)
     monkeypatch.setattr(catalog, "_next_refresh", float("inf"))
 
     def offline():
@@ -549,3 +550,20 @@ def test_a_failed_refresh_never_fails_a_run(release, monkeypatch):
     assert seen == "$0.27"
     _, seen = run_seen(nodes.AnexUpscaleTo2K, task_id="458154338194580776")
     assert seen == "$0.0425 a second"
+
+
+def test_resolution_options_follow_the_catalog(monkeypatch):
+    def options(node):
+        schema = node.GET_SCHEMA()
+        return next(i.options for i in schema.inputs
+                    if i.id == "resolution")
+    assert options(nodes.AnexTextToVideo) == list(catalog.resolutions())
+    assert options(nodes.AnexUpscaleTo2K) == ["2K"]
+    monkeypatch.setattr(catalog, "_upscale_4k_usd", __import__(
+        "decimal").Decimal("0.068"))
+    assert options(nodes.AnexUpscaleTo2K) == ["2K", "4K"]
+    client, _ = run(nodes.AnexUpscaleTo2K, task_id="t", resolution="4K")
+    assert client.body["resolution"] == "4K"
+    monkeypatch.setattr(catalog, "_upscale_4k_usd", None)
+    with pytest.raises(ValueError, match="4K"):
+        run(nodes.AnexUpscaleTo2K, task_id="t", resolution="4K")

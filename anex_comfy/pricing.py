@@ -37,10 +37,15 @@ def two_k_models() -> tuple[str, ...]:
                                if "2K" in m.resolutions))
 
 
-def upscale_rate() -> float:
-    """Per second of 2K video when a finished clip is upscaled."""
-    usd = catalog.upscale_usd()
-    return UPSCALE_USD_PER_SECOND if usd is None else float(usd)
+def upscale_rate(resolution: str = "2K") -> float:
+    """Per second of video when a finished clip is upscaled to this
+    resolution. Raises ValueError for one the catalog gives no price for."""
+    usd = catalog.upscale_usd(resolution)
+    if usd is None:
+        if resolution == "2K":
+            return UPSCALE_USD_PER_SECOND
+        raise ValueError(f"no price for upscaling to {resolution}")
+    return float(usd)
 
 
 def clip_usd(model: str, duration: int, resolution: str = "768P", *,
@@ -49,22 +54,24 @@ def clip_usd(model: str, duration: int, resolution: str = "768P", *,
     """The list price of one clip, or None for a model with no known price.
     `reference_video_seconds` is the summed length of the reference videos,
     each counted up to the clip's length; they bill at the clip's own rate
-    per second, 2K included. Reference audio is free, so it takes no part."""
+    per second, 2K and 4K included. Reference audio is free, so it takes no part."""
     m = _model(model, kind)
     if m is None:
         return None
     rate = m.output_usd
     if resolution == "2K":
         rate += m.upscale_usd or Decimal(0)
+    elif resolution == "4K":
+        rate += m.upscale_4k_usd or Decimal(0)
     usd = (duration * rate
            + max(images - m.free_images, 0) * (m.image_usd or Decimal(0)))
     billed_ref = min(round(reference_video_seconds), MAX_REFERENCE_SECONDS)
     return round(float(usd + billed_ref * rate), 4)
 
 
-def upscale_usd(duration: float) -> float:
-    """The list price of upscaling a finished clip of this length to 2K."""
-    return round(round(duration) * upscale_rate(), 4)
+def upscale_usd(duration: float, resolution: str = "2K") -> float:
+    """The list price of upscaling a finished clip of this length."""
+    return round(round(duration) * upscale_rate(resolution), 4)
 
 
 def label(usd: float | None) -> str:

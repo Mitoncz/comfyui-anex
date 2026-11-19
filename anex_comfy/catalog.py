@@ -50,13 +50,14 @@ RETRY_SECONDS = 60
 MAX_USD = Decimal(100)
 
 KINDS = ("text", "frames", "reference")
-RESOLUTIONS = ("768P", "2K")
+# The order resolutions() lists them in; any other the catalog names follows.
+RESOLUTION_ORDER = ("768P", "2K", "4K")
 # The model a node starts on, when the loaded list has it for that kind:
 # the one the node used before it had a menu, so a saved workflow renders
 # as it did.
 PREFERRED = {"text": "MiniMax-H3", "frames": "MiniMax-H3",
              "reference": "MiniMax-H3-Ref2VA-SMD-4step"}
-# The upscaler's catalog id: its price is that of the Upscale to 2K node.
+# The upscaler's catalog id: its prices are those of the Upscale Video node.
 UPSCALER_ID = "seedvr2-3b"
 
 
@@ -70,6 +71,7 @@ class VideoModel:
     upscale_usd: Decimal | None
     image_usd: Decimal | None
     free_images: int
+    upscale_4k_usd: Decimal | None = None
 
 
 BUILTIN: list[VideoModel] = [
@@ -96,6 +98,7 @@ BUILTIN_IDS = {
 _loaded: list[VideoModel] | None = None
 _live: list[VideoModel] | None = None
 _upscale_usd: Decimal | None = None
+_upscale_4k_usd: Decimal | None = None
 _next_refresh = 0.0
 
 
@@ -122,6 +125,8 @@ def _priced(fees: dict, **fields) -> dict:
         raise ValueError(f"bad free image count {free!r}")
     return dict(fields, output_usd=output,
                 upscale_usd=_usd(fees.get("video_upscale_usd_per_second")),
+                upscale_4k_usd=_usd(
+                    fees.get("video_upscale_4k_usd_per_second")),
                 image_usd=_usd(fees.get("video_input_image_usd")),
                 free_images=free)
 
@@ -139,13 +144,19 @@ def _from_block(entry: dict) -> VideoModel:
         raise ValueError(f"bad resolutions {resolutions!r}")
     if not isinstance(seed, bool):
         raise ValueError(f"bad supports_seed {seed!r}")
-    return VideoModel(**_priced(entry.get("media_fees") or {}, name=name,
-                                kinds=kinds, resolutions=resolutions,
-                                supports_seed=seed))
+    priced = _priced(entry.get("media_fees") or {}, name=name, kinds=kinds,
+                     resolutions=resolutions, supports_seed=seed)
+    # A model lists 4K only when the catalog also gives its 4K rate, so an
+    # option that is shown always has a price.
+    if priced["upscale_4k_usd"] is None:
+        priced["resolutions"] = tuple(r for r in resolutions if r != "4K")
+    return VideoModel(**priced)
 
 
-def _read(payload: dict) -> tuple[list[VideoModel], Decimal | None]:
-    """The models of a catalog answer, and the upscaler's price. Raises
+def _read(payload: dict
+          ) -> tuple[list[VideoModel], Decimal | None, Decimal | None]:
+    """The models of a catalog answer, and the upscaler's 2K and 4K prices
+    (None where the answer gives none). Raises
     ValueError when the answer is not a catalog or yields no model."""
     listed = payload.get("models") if isinstance(payload, dict) else None
     if not isinstance(listed, list):
@@ -157,6 +168,11 @@ def _read(payload: dict) -> tuple[list[VideoModel], Decimal | None]:
             "video_output_usd_per_second"))
     except (ValueError, AttributeError):
         upscale = None
+    try:
+        upscale_4k = _usd(fees.get(UPSCALER_ID, {}).get(
+            "video_output_4k_usd_per_second"))
+    except (ValueError, AttributeError):
+        upscale_4k = None
     if any("video" in e for e in entries):
         found = []
         for entry in entries:
@@ -169,7 +185,7 @@ def _read(payload: dict) -> tuple[list[VideoModel], Decimal | None]:
                             entry.get("id"), exc)
         if not found:
             raise ValueError("no usable video model in the catalog")
-        return found, upscale
+        return found, upscale, upscale_4k
     found = []
     for model in BUILTIN:
         for model_id in BUILTIN_IDS[model.name]:
@@ -179,7 +195,7 @@ def _read(payload: dict) -> tuple[list[VideoModel], Decimal | None]:
                 continue
             break
         found.append(model)
-    return found, upscale
+    return found, upscale, upscale_4k
 
 
 def parse(payload: dict) -> list[VideoModel]:
@@ -252,7 +268,7 @@ def _write_cache(path: str, payload: dict) -> None:
 
 
 def _read_good(fetch: Callable[[], dict], path: str
-               ) -> tuple[list[VideoModel], Decimal | None]:
+               ) -> tuple[list[VideoModel], Decimal | None, Decimal | None]:
     """Fetch and parse the catalog, and keep a good answer on disk. Raises
     on any failure."""
     payload = _within_timeout(fetch)
@@ -266,26 +282,27 @@ def load(fetch: Callable[[], dict] | None = None,
     """Read the catalog and make it the one the menus and runs use: from
     anex.sh (by `fetch`, CATALOG_URL by default), else the copy kept on
     disk, else BUILTIN. Never raises."""
-    global _loaded, _live, _upscale_usd, _next_refresh
-    models, upscale = list(BUILTIN), None
+    global _loaded, _live, _upscale_usd, _upscale_4k_usd, _next_refresh
+    models, upscale, upscale_4k = list(BUILTIN), None, None
     fresh = False
     try:
         path = cache_path or default_cache_path()
         try:
-            models, upscale = _read_good(fetch or _fetch, path)
+            models, upscale, upscale_4k = _read_good(fetch or _fetch, path)
             fresh = True
         except Exception as exc:  # noqa: BLE001 - fall back to the copy
             try:
                 with open(path, encoding="utf-8") as f:
-                    models, upscale = _read(json.load(f))
+                    models, upscale, upscale_4k = _read(json.load(f))
                 used = f"the copy kept at {path}"
             except Exception:  # noqa: BLE001 - fall back to BUILTIN
-                models, upscale = list(BUILTIN), None
+                models, upscale, upscale_4k = list(BUILTIN), None, None
                 used = "the built-in list"
             log.warning("anex.sh catalog not read (%s); using %s", exc, used)
     except Exception:  # noqa: BLE001 - never keep ComfyUI from starting
-        models, upscale = list(BUILTIN), None
+        models, upscale, upscale_4k = list(BUILTIN), None, None
     _loaded, _live, _upscale_usd = models, list(models), upscale
+    _upscale_4k_usd = upscale_4k
     _next_refresh = time.monotonic() + (REFRESH_SECONDS if fresh
                                         else RETRY_SECONDS)
     return models
@@ -298,15 +315,15 @@ async def refresh(fetch: Callable[[], dict] | None = None,
     is older than REFRESH_SECONDS (or a failed read is older than
     RETRY_SECONDS). The menus stay as they are. Never raises: on any failure
     the run uses the last good data."""
-    global _live, _upscale_usd, _next_refresh
+    global _live, _upscale_usd, _upscale_4k_usd, _next_refresh
     now = time.monotonic() if now is None else now
     if now < _next_refresh:
         return
     _next_refresh = now + RETRY_SECONDS
     try:
         path = cache_path or default_cache_path()
-        models, upscale = await asyncio.to_thread(_read_good,
-                                                  fetch or _fetch, path)
+        models, upscale, upscale_4k = await asyncio.to_thread(
+            _read_good, fetch or _fetch, path)
     except Exception as exc:  # noqa: BLE001 - a run never fails on prices
         log.warning("anex.sh catalog not read (%s); keeping the prices in "
                     "use", exc)
@@ -314,6 +331,9 @@ async def refresh(fetch: Callable[[], dict] | None = None,
     _live = models
     if upscale is not None:
         _upscale_usd = upscale
+    # The 4K rate follows the catalog both ways: an answer without it takes
+    # the 4K option away.
+    _upscale_4k_usd = upscale_4k
     _next_refresh = now + REFRESH_SECONDS
 
 
@@ -327,10 +347,28 @@ def live() -> list[VideoModel]:
     return _live if _live is not None else loaded()
 
 
-def upscale_usd() -> Decimal | None:
-    """The catalog's price per second of the Upscale to 2K node, if read."""
+def upscale_usd(resolution: str = "2K") -> Decimal | None:
+    """The catalog's price per second of the Upscale Video node at this
+    resolution, if read (None for a resolution it does not price)."""
     live()
-    return _upscale_usd
+    if resolution == "2K":
+        return _upscale_usd
+    if resolution == "4K":
+        return _upscale_4k_usd
+    return None
+
+
+def upscale_resolutions() -> tuple[str, ...]:
+    """The resolutions the Upscale Video node offers: 2K always (the pack has
+    its own rate for it), 4K when the catalog prices it."""
+    return ("2K", "4K") if upscale_usd("4K") is not None else ("2K",)
+
+
+def resolutions() -> tuple[str, ...]:
+    """The resolutions the video models list, in the order 768P, 2K, 4K."""
+    seen = {r for m in live() for r in m.resolutions}
+    known = [r for r in RESOLUTION_ORDER if r in seen]
+    return tuple(known + sorted(seen - set(RESOLUTION_ORDER)))
 
 
 def models(kind: str) -> list[VideoModel]:
