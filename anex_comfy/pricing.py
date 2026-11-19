@@ -54,7 +54,8 @@ def clip_usd(model: str, duration: int, resolution: str = "768P", *,
     """The list price of one clip, or None for a model with no known price.
     `reference_video_seconds` is the summed length of the reference videos,
     each counted up to the clip's length; they bill at the clip's own rate
-    per second, 2K and 4K included. Reference audio is free, so it takes no part."""
+    per second, 2K and 4K included. Reference audio is free, so it takes no
+    part."""
     m = _model(model, kind)
     if m is None:
         return None

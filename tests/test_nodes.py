@@ -9,6 +9,7 @@ import io
 import json
 import os
 import sys
+from decimal import Decimal
 
 import pytest
 
@@ -559,8 +560,7 @@ def test_resolution_options_follow_the_catalog(monkeypatch):
                     if i.id == "resolution")
     assert options(nodes.AnexTextToVideo) == list(catalog.resolutions())
     assert options(nodes.AnexUpscaleTo2K) == ["2K"]
-    monkeypatch.setattr(catalog, "_upscale_4k_usd", __import__(
-        "decimal").Decimal("0.068"))
+    monkeypatch.setattr(catalog, "_upscale_4k_usd", Decimal("0.068"))
     assert options(nodes.AnexUpscaleTo2K) == ["2K", "4K"]
     client, _ = run(nodes.AnexUpscaleTo2K, task_id="t", resolution="4K")
     assert client.body["resolution"] == "4K"

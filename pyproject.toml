@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-anex"
 version = "1.3.0"
-description = "Video with sound from MiniMax H3 and FastH3 on anex.sh, from inside ComfyUI: text to video, first and last frame, reference images and audio, video editing and 2K upscaling."
+description = "Video with sound from MiniMax H3 and FastH3 on anex.sh, from inside ComfyUI: text to video, first and last frame, reference images and audio, video editing and upscaling to 2K or 4K."
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"

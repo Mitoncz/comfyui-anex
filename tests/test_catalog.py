@@ -406,3 +406,33 @@ def test_builtin_models_offer_no_4k(tmp_path):
     assert catalog.resolutions() == ("768P", "2K")
     assert catalog.upscale_resolutions() == ("2K",)
     assert all(m.upscale_4k_usd is None for m in catalog.BUILTIN)
+
+
+def test_a_refresh_without_4k_withdraws_the_4k_upscale(tmp_path):
+    use(with_4k(this_release()), tmp_path)
+    assert catalog.upscale_resolutions() == ("2K", "4K")
+    refresh(Fetcher(this_release()), tmp_path, catalog._next_refresh)
+    assert catalog.upscale_resolutions() == ("2K",)
+    assert catalog.upscale_usd("4K") is None
+    assert catalog.upscale_usd("2K") == Decimal("0.0425")
+
+
+def test_the_upscale_node_is_worded_for_every_resolution():
+    """The upscale node offers 2K and 4K and takes any accepted clip, so
+    neither its texts nor the pack's describe it as 2K-only or 768P-only.
+    Its node id stays, so saved workflows keep working."""
+    root = os.path.join(os.path.dirname(__file__), "..")
+
+    def read(*parts):
+        with open(os.path.join(root, *parts), encoding="utf-8") as f:
+            return f.read()
+    nodes_src = read("anex_comfy", "nodes.py")
+    start = nodes_src.index("class AnexUpscaleTo2K")
+    node = nodes_src[start:nodes_src.index("async def execute", start)]
+    assert 'node_id="AnexUpscaleTo2K"' in node
+    assert 'display_name="anex.sh Upscale Video"' in node
+    for text in (node, read("README.md"), read("pyproject.toml")):
+        assert "Upscale Video to 2K" not in text
+        assert "768P video" not in text
+        assert "finished 768P clip" not in text
+    assert "2K upscaling" not in read("pyproject.toml")
