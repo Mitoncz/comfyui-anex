@@ -58,6 +58,7 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(catalog, "_loaded", None)
     monkeypatch.setattr(catalog, "_live", None)
     monkeypatch.setattr(catalog, "_upscale_usd", None)
+    monkeypatch.setattr(catalog, "_upscale_4k_usd", None)
     monkeypatch.setattr(catalog, "_next_refresh", 0.0)
 
 
@@ -343,3 +344,95 @@ def test_a_model_the_refresh_no_longer_lists(tmp_path):
     refresh(Fetcher(doc), tmp_path, catalog._next_refresh)
     assert "FastH3-8-Step-V2" in catalog.names("text")
     assert catalog.find("FastH3-8-Step-V2", "text") is None
+
+
+def with_4k(payload):
+    """This release's catalog, with the 4K rates and 4K listed on the three
+    H3 models that render it."""
+    for e in payload["models"]:
+        fees = e["media_fees"]
+        if e["id"] in ("minimax-h3", "minimax-h3-ref2va",
+                       "minimax-h3-ref2va-smd-4step"):
+            e["video"]["resolutions"] = ["768P", "2K", "4K"]
+            fees["video_upscale_4k_usd_per_second"] = "0.068"
+        if e["id"] == "seedvr2-3b":
+            fees["video_output_4k_usd_per_second"] = "0.068"
+    return payload
+
+
+def test_catalog_with_4k(tmp_path):
+    from anex_comfy import pricing
+    use(with_4k(this_release()), tmp_path)
+    assert catalog.resolutions() == ("768P", "2K", "4K")
+    assert catalog.find("MiniMax-H3", "text").resolutions == (
+        "768P", "2K", "4K")
+    assert catalog.find("MiniMax-H3", "text").upscale_4k_usd == Decimal("0.068")
+    assert catalog.find("FastH3-8-Step-V2", "text").resolutions == ("768P",)
+    assert catalog.upscale_usd("4K") == Decimal("0.068")
+    assert catalog.upscale_usd("2K") == Decimal("0.0425")
+    assert catalog.upscale_resolutions() == ("2K", "4K")
+    assert pricing.clip_usd("MiniMax-H3", 10, "4K") == 1.36
+    assert pricing.clip_usd("MiniMax-H3-Ref2VA-SMD-4step", 10, "4K") == 1.19
+    assert pricing.upscale_usd(10, "4K") == 0.68
+
+
+def test_catalog_without_4k_fields_offers_no_4k(tmp_path):
+    from anex_comfy import pricing
+    use(this_release(), tmp_path)
+    assert catalog.resolutions() == ("768P", "2K")
+    assert catalog.upscale_usd("4K") is None
+    assert catalog.upscale_resolutions() == ("2K",)
+    assert pricing.clip_usd("MiniMax-H3", 10, "2K") == 1.1
+    assert pricing.upscale_usd(10) == 0.425
+    with pytest.raises(ValueError):
+        pricing.upscale_rate("4K")
+
+
+def test_a_model_listing_4k_without_its_rate_does_not_offer_it(tmp_path):
+    payload = with_4k(this_release())
+    for e in payload["models"]:
+        if e["id"] == "minimax-h3":
+            del e["media_fees"]["video_upscale_4k_usd_per_second"]
+    use(payload, tmp_path)
+    assert catalog.find("MiniMax-H3", "text").resolutions == ("768P", "2K")
+    assert catalog.find("MiniMax-H3", "reference").resolutions == (
+        "768P", "2K", "4K")
+
+
+def test_builtin_models_offer_no_4k(tmp_path):
+    def offline():
+        raise OSError("no network")
+    catalog.load(fetch=offline, cache_path=str(tmp_path / "none.json"))
+    assert catalog.resolutions() == ("768P", "2K")
+    assert catalog.upscale_resolutions() == ("2K",)
+    assert all(m.upscale_4k_usd is None for m in catalog.BUILTIN)
+
+
+def test_a_refresh_without_4k_withdraws_the_4k_upscale(tmp_path):
+    use(with_4k(this_release()), tmp_path)
+    assert catalog.upscale_resolutions() == ("2K", "4K")
+    refresh(Fetcher(this_release()), tmp_path, catalog._next_refresh)
+    assert catalog.upscale_resolutions() == ("2K",)
+    assert catalog.upscale_usd("4K") is None
+    assert catalog.upscale_usd("2K") == Decimal("0.0425")
+
+
+def test_the_upscale_node_is_worded_for_every_resolution():
+    """The upscale node offers 2K and 4K and takes any accepted clip, so
+    neither its texts nor the pack's describe it as 2K-only or 768P-only.
+    Its node id stays, so saved workflows keep working."""
+    root = os.path.join(os.path.dirname(__file__), "..")
+
+    def read(*parts):
+        with open(os.path.join(root, *parts), encoding="utf-8") as f:
+            return f.read()
+    nodes_src = read("anex_comfy", "nodes.py")
+    start = nodes_src.index("class AnexUpscaleTo2K")
+    node = nodes_src[start:nodes_src.index("async def execute", start)]
+    assert 'node_id="AnexUpscaleTo2K"' in node
+    assert 'display_name="anex.sh Upscale Video"' in node
+    for text in (node, read("README.md"), read("pyproject.toml")):
+        assert "Upscale Video to 2K" not in text
+        assert "768P video" not in text
+        assert "finished 768P clip" not in text
+    assert "2K upscaling" not in read("pyproject.toml")

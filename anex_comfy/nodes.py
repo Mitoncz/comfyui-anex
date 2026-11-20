@@ -1,6 +1,6 @@
 """ComfyUI nodes for anex.sh video generation (MiniMax H3, FastH3, the other
-video models anex.sh lists, and 2K upscaling), on the MiniMax-compatible API
-with the user's anex.sh key."""
+video models anex.sh lists, and upscaling to 2K or 4K), on the
+MiniMax-compatible API with the user's anex.sh key."""
 from __future__ import annotations
 
 import io
@@ -174,10 +174,11 @@ def _duration_input() -> IO.Int.Input:
 
 
 def _resolution_input() -> IO.Combo.Input:
-    return IO.Combo.Input("resolution", options=["768P", "2K"],
+    return IO.Combo.Input("resolution", options=list(catalog.resolutions()),
                           default="768P",
-                          tooltip="768P is the model's own output. 2K is the "
-                          "768p clip upscaled, at an extra rate per second.")
+                          tooltip="768P is the model's own output. 2K and 4K "
+                          "are the 768p clip upscaled, at an extra rate per "
+                          "second.")
 
 
 def _model_input(kind: str, tooltip: str, *,
@@ -242,8 +243,9 @@ def _account_inputs() -> list:
 _OUTPUTS = [
     IO.Video.Output(display_name="video"),
     IO.String.Output(display_name="task_id",
-                     tooltip="The anex.sh task id; connect it to Upscale to "
-                     "2K to upscale this clip without uploading it again."),
+                     tooltip="The anex.sh task id; connect it to Upscale "
+                     "Video to upscale this clip without uploading it "
+                     "again."),
 ]
 _HIDDEN = [IO.Hidden.unique_id]
 
@@ -502,19 +504,24 @@ class AnexUpscaleTo2K(IO.ComfyNode):
     def define_schema(cls):
         return IO.Schema(
             node_id="AnexUpscaleTo2K",
-            display_name="anex.sh Upscale Video to 2K",
+            display_name="anex.sh Upscale Video",
             category=CATEGORY,
-            description="Upscales a finished 768P clip to 2K, "
-            "keeping it as it is otherwise. Connect the task_id of an anex.sh "
-            "node (nothing is uploaded), or any 768P video.",
+            description="Upscales a clip to 2K or 4K, keeping it as it is "
+            "otherwise. Connect the task_id of a 768P clip made by an "
+            "anex.sh node (nothing is uploaded), or a video up to 2K size.",
             inputs=[
                 IO.String.Input("task_id", optional=True, force_input=True,
                                 tooltip="The task_id output of an anex.sh "
                                 "video node."),
                 IO.Video.Input("video", optional=True,
-                               tooltip="A 768P clip, 4 to 15 s, used when no "
-                               "task_id is connected."),
+                               tooltip="A clip from 768p up to 2K size, 4 to "
+                               "15 s, used when no task_id is connected."),
                 *_account_inputs(),
+                IO.Combo.Input("resolution",
+                               options=list(catalog.upscale_resolutions()),
+                               default="2K", optional=True,
+                               tooltip="What to upscale to, at the rate "
+                               "per second shown on the status line."),
             ],
             outputs=_OUTPUTS,
             hidden=_HIDDEN,
@@ -524,15 +531,21 @@ class AnexUpscaleTo2K(IO.ComfyNode):
     async def execute(cls, task_id: str | None = None,
                       video: Input.Video | None = None,
                       region: str = DEFAULT_REGION,
-                      api_key: str = "") -> IO.NodeOutput:
-        body = {"model": "MiniMax-H3", "resolution": "2K"}
+                      api_key: str = "",
+                      resolution: str = "2K") -> IO.NodeOutput:
+        body = {"model": "MiniMax-H3", "resolution": resolution}
         uploads = []
         await catalog.refresh()
+        if resolution not in catalog.upscale_resolutions():
+            raise ValueError(f"anex.sh does not list upscaling to "
+                             f"{resolution}")
         if task_id:
             body["source_task_id"] = task_id
-            price = f"{pricing.rate_label(pricing.upscale_rate())} a second"
+            price = (f"{pricing.rate_label(pricing.upscale_rate(resolution))}"
+                     " a second")
         elif video is not None:
-            price = pricing.label(pricing.upscale_usd(video.get_duration()))
+            price = pricing.label(pricing.upscale_usd(video.get_duration(),
+                                                      resolution))
             uploads.append(("base_video.mp4", _video_mp4(video), "video/mp4",
                             lambda src: {"type": "video_url",
                                          "role": "base_video",

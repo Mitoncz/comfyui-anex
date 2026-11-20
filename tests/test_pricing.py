@@ -20,6 +20,7 @@ def _builtin_models(monkeypatch):
     monkeypatch.setattr(catalog, "_loaded", list(catalog.BUILTIN))
     monkeypatch.setattr(catalog, "_live", None)
     monkeypatch.setattr(catalog, "_upscale_usd", None)
+    monkeypatch.setattr(catalog, "_upscale_4k_usd", None)
 
 
 def test_worked_examples():
@@ -131,3 +132,12 @@ def test_a_model_the_catalog_lacks(tmp_path):
     # A built-in model keeps its built-in price; an unknown one has none.
     assert pricing.clip_usd("FastH3-8-Step-V2", 10) == pytest.approx(0.17)
     assert pricing.clip_usd("Not-A-Model", 10, kind="text") is None
+
+
+def test_2k_prices_unchanged():
+    assert pricing.clip_usd("MiniMax-H3", 10, "2K") == pytest.approx(1.1)
+    assert pricing.clip_usd("MiniMax-H3-Ref2VA-SMD-4step", 10,
+                            "2K") == pytest.approx(1.1)
+    assert pricing.upscale_usd(6, "2K") == pytest.approx(0.255)
+    # A 4K request to a model with no 4K rate adds nothing.
+    assert pricing.clip_usd("MiniMax-H3", 10, "4K") == pytest.approx(0.68)

@@ -10,12 +10,13 @@ sends a request to anex.sh, waits for the clip and hands it on as a ComfyUI
 | anex.sh Text to Video | MiniMax H3 (50 steps), FastH3-8-Step-V2 (8 steps) | a clip from a prompt |
 | anex.sh First/Last Frame to Video | MiniMax H3 | a clip that starts on one image, ends on another, or both |
 | anex.sh Reference to Video / Edit Video | MiniMax H3 Ref2VA (the fast 4-step model, and the full 50-step render where offered) | people, products or places from up to 9 images in a new clip, voices or sounds from up to 3 audios, or up to 3 videos edited as the prompt describes |
-| anex.sh Upscale Video to 2K | | a finished 768P clip at 2K |
+| anex.sh Upscale Video | | a clip at 2K, or at 4K where anex.sh offers it |
 | anex.sh Get Task | | the clip of a task made earlier, at no charge |
 
-Clips are 768P (768 pixels on the short side) or 2K, 24 frames per second,
+Clips are 768P (768 pixels on the short side), 2K or, where anex.sh offers it, 4K, 24 frames per second,
 4 to 15 seconds. Every node also outputs the anex.sh `task_id`: connect it to
-Upscale Video to 2K to upscale that clip without sending it back.
+Upscale Video to upscale that clip without sending it back. Upscale Video also
+takes a video you connect, from 768p up to 2K size.
 
 ## Models
 
@@ -30,7 +31,8 @@ starts on `MiniMax-H3-Ref2VA-SMD-4step`, the fast 4-step model. MiniMax H3's
 full 50-step render appears in it as `MiniMax-H3` when anex.sh offers it,
 and takes about ten times as long. Workflows saved before the menu existed open
 on the model they always used. A model that makes 768P only refuses 2K
-before anything is sent.
+before anything is sent. The resolution menus list what anex.sh offers when
+ComfyUI starts, so 4K appears once anex.sh offers it.
 
 ## Install
 
@@ -89,7 +91,7 @@ were:
 | MiniMax H3 Ref2VA (4-step) | $0.051 | first 5 free, then $0.034 | $0.051 |
 | FastH3-8-Step-V2 | $0.017 | | |
 | 2K (MiniMax H3 and Ref2VA) | $0.11 | | $0.11 |
-| Upscale Video to 2K | $0.0425 | | |
+| Upscale Video, to 2K | $0.0425 | | |
 
 A reference video bills the part the model reads: its length or the clip's,
 whichever is shorter. Reference audio is free. Failed, refused and
